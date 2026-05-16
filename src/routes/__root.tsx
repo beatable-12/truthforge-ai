@@ -111,7 +111,9 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
+      <Nav />
       <Outlet />
+      <Footer />
     </QueryClientProvider>
   );
 }
