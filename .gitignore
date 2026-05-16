@@ -22,6 +22,10 @@ dist-ssr
 .env.production
 .env.example
 
+# Documentation (all .md files except needed ones)
+*.md
+!README.md
+
 # Local startup/batch files (Windows)
 start_api.bat
 startup.bat
@@ -29,18 +33,7 @@ setup_windows.bat
 fix_api.bat
 run_tests.bat
 verify_setup.bat
-
-# Local quickstart/guide files
-QUICK_START.md
-QUICK_START_TESTS.md
-QUICK_START_GEMINI.md
-WINDOWS_SETUP.md
-WINDOWS_FIX.md
-START_HERE.md
-
-# Session/local status files
-SESSION_COMPLETE.md
-_COMPLETION_SUMMARY.txt
+*.bat
 
 # Wrangler / Cloudflare
 .wrangler/
