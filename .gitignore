@@ -22,7 +22,7 @@ dist-ssr
 .env.production
 .env.example
 
-# Documentation (all .md files except needed ones)
+# Documentation - ALL .md files except README
 *.md
 !README.md
 
@@ -33,7 +33,8 @@ setup_windows.bat
 fix_api.bat
 run_tests.bat
 verify_setup.bat
-*.bat
+remove_md_files.bat
+pull_md_files.bat
 
 # Wrangler / Cloudflare
 .wrangler/
