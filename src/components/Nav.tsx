@@ -1,6 +1,6 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import { motion } from "framer-motion";
-import { Flame } from "lucide-react";
+import { LogoMark } from "./LogoMark";
 
 const navItems = [
   { to: "/", label: "Home" },
@@ -22,12 +22,10 @@ export function Nav() {
     >
       <div className="mx-auto mt-3 max-w-7xl px-4">
         <div className="glass-strong flex items-center justify-between rounded-2xl px-4 py-2.5">
-          <Link to="/" className="flex items-center gap-2.5 group">
+          <Link to="/" className="flex items-center gap-2 group">
             <div className="relative">
-              <div className="absolute inset-0 bg-gradient-forge rounded-lg blur-md opacity-60 group-hover:opacity-100 transition" />
-              <div className="relative bg-gradient-forge w-8 h-8 rounded-lg flex items-center justify-center">
-                <Flame className="w-4 h-4 text-forge-foreground" strokeWidth={2.5} />
-              </div>
+              <div className="absolute inset-0 bg-gradient-primary rounded-lg blur-md opacity-40 group-hover:opacity-70 transition" />
+              <LogoMark className="relative w-9 h-9" />
             </div>
             <div className="flex flex-col leading-none">
               <span className="font-display font-semibold text-sm tracking-tight">TruthForge</span>

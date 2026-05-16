@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
-import { Flame, Github, Twitter } from "lucide-react";
+import { Github, Twitter } from "lucide-react";
+import { LogoMark } from "./LogoMark";
 
 export function Footer() {
   return (
@@ -7,11 +8,9 @@ export function Footer() {
       <div className="mx-auto max-w-7xl px-6 py-14">
         <div className="grid gap-10 md:grid-cols-4">
           <div className="md:col-span-2">
-            <div className="flex items-center gap-2.5">
-              <div className="bg-gradient-forge w-8 h-8 rounded-lg flex items-center justify-center">
-                <Flame className="w-4 h-4 text-forge-foreground" strokeWidth={2.5} />
-              </div>
-              <span className="font-display font-semibold">TruthForge AI</span>
+            <div className="flex items-center gap-2">
+              <LogoMark className="w-10 h-10" />
+              <span className="font-display font-semibold text-lg">TruthForge AI</span>
             </div>
             <p className="mt-4 max-w-sm text-sm text-muted-foreground">
               AI systems optimize for agreement. TruthForge optimizes for challenged truth.
