@@ -2,12 +2,34 @@ import "./lib/error-capture";
 
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
+import { initializeDatabase, checkDatabaseHealth } from "./db-init";
 
 type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
 };
 
 let serverEntryPromise: Promise<ServerEntry> | undefined;
+let databaseInitialized = false;
+
+async function initializeApp(): Promise<void> {
+  if (databaseInitialized) {
+    return;
+  }
+
+  try {
+    console.log("[Server] Initializing TruthForge database...");
+    const result = await initializeDatabase();
+    if (result.success) {
+      console.log(`[Server] ✓ Database initialized: ${result.tablesCreated} tables, ${result.indexesCreated} indexes`);
+      databaseInitialized = true;
+    } else {
+      console.warn(`[Server] Database initialization warning: ${result.message}`);
+    }
+  } catch (error) {
+    console.error("[Server] Database initialization failed:", error);
+    throw error;
+  }
+}
 
 async function getServerEntry(): Promise<ServerEntry> {
   if (!serverEntryPromise) {
@@ -69,6 +91,27 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      // Initialize database on first request
+      if (!databaseInitialized) {
+        await initializeApp();
+      }
+
+      // Health check endpoint
+      if (request.method === "GET" && new URL(request.url).pathname === "/api/health") {
+        const health = checkDatabaseHealth();
+        return new Response(
+          JSON.stringify({
+            status: health.healthy ? "healthy" : "degraded",
+            database: health,
+            timestamp: new Date().toISOString(),
+          }),
+          {
+            status: health.healthy ? 200 : 503,
+            headers: { "content-type": "application/json" },
+          }
+        );
+      }
+
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);

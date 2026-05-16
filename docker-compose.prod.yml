@@ -1,0 +1,99 @@
+# Docker Compose Configuration for Production
+# 
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# 
+# This file overrides development settings for production deployment
+
+version: '3.8'
+
+services:
+  truthforge:
+    # Image name
+    image: truthforge:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - NODE_ENV=production
+    
+    # Container name
+    container_name: truthforge-ai
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Environment variables
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      NODE_OPTIONS: "--max-old-space-size=2048"
+      TRUTHFORGE_DB_PATH: /data/truthforge.db
+      LOG_LEVEL: info
+    
+    # Environment file
+    env_file:
+      - .env
+    
+    # Port mapping
+    ports:
+      - "3000:3000"
+    
+    # Volume mounts
+    volumes:
+      - ./data:/data
+      - ./logs:/data/logs
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=truthforge"
+    
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    
+    # Read-only filesystem (with exceptions)
+    read_only: false
+    
+    # User (if not root)
+    # user: "1000:1000"
+    
+    # Networks
+    networks:
+      - truthforge-network
+    
+    # Depends on (if using separate database container)
+    # depends_on:
+    #   database:
+    #     condition: service_healthy
+
+networks:
+  truthforge-network:
+    driver: bridge
+
+volumes:
+  data:
+    driver: local
+  logs:
+    driver: local

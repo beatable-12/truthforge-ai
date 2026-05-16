@@ -1,0 +1,50 @@
+[Unit]
+Description=TruthForge AI - Reasoning Engine for Credible Analysis
+Documentation=file:///opt/truthforge/DEPLOYMENT_GUIDE.md
+After=network.target
+
+[Service]
+# Service configuration
+Type=simple
+User=truthforge
+Group=truthforge
+WorkingDirectory=/opt/truthforge
+
+# Start command
+ExecStart=/usr/bin/node --loader ts-node/esm /opt/truthforge/src/express-server.ts
+
+# Environment variables
+Environment="NODE_ENV=production"
+Environment="PORT=3000"
+Environment="NODE_OPTIONS=--max-old-space-size=2048"
+Environment="TRUTHFORGE_DB_PATH=/data/truthforge.db"
+
+# Environment file location
+EnvironmentFile=/opt/truthforge/.env
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+
+# Process management
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=512
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=truthforge
+
+# Security
+PrivateTmp=yes
+NoNewPrivileges=true
+ReadOnlyPaths=/
+ReadWritePaths=/data
+
+[Install]
+WantedBy=multi-user.target
