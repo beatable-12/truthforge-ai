@@ -110,3 +110,7 @@ node SynthesisResult: BaseNode {
     has final_answer: str = "";
     has reasoning_chain: list[str] = [];
 }
+
+# MemoryRecord alias for backward compatibility
+node MemoryRecord: MemoryEntry {
+}

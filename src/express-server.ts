@@ -8,14 +8,14 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 
 // Import routes and middleware
-import truthforgeRouter from './api-routes';
-import { truthforgeLogger } from './truthforge-logger';
-import { truthforgeErrorHandler } from './truthforge-error';
-import { createTruthForgeRateLimiter, cleanupExpiredRateLimits } from './truthforge-rate-limit';
-import { initializeDatabase, checkDatabaseHealth } from './db-init';
+import truthforgeRouter from './api-routes.ts';
+import { truthforgeLogger } from './truthforge-logger.ts';
+import { truthforgeErrorHandler } from './truthforge-error.ts';
+import { createTruthForgeRateLimiter } from './truthforge-rate-limit.ts';
+import { initializeDatabase, checkDatabaseHealth } from './db-init.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -62,7 +62,7 @@ function initializeMiddleware() {
 /**
  * Initialize database on startup
  */
-async function initializeAppDatabase(): Promise<void> {
+function initializeAppDatabase(): void {
   if (databaseInitialized) {
     return;
   }
@@ -70,7 +70,7 @@ async function initializeAppDatabase(): Promise<void> {
   try {
     console.log('[Server] Initializing TruthForge database...');
     const dbPath = process.env.TRUTHFORGE_DB_PATH || './truthforge.db';
-    const result = await initializeDatabase(dbPath);
+    const result = initializeDatabase(dbPath);
 
     if (result.success) {
       console.log(`[Server] ✓ Database initialized: ${result.tablesCreated} tables, ${result.indexesCreated} indexes`);
@@ -79,7 +79,7 @@ async function initializeAppDatabase(): Promise<void> {
       console.warn(`[Server] Database initialization warning: ${result.message}`);
     }
   } catch (error) {
-    console.error('[Server] Database initialization failed:', error);
+    console.error('[Server] Database initialization failed:', String(error));
     throw error;
   }
 }
@@ -140,10 +140,10 @@ function setupErrorHandling() {
 /**
  * Start the Express server
  */
-async function startServer(): Promise<void> {
+function startServer(): void {
   try {
-    // Initialize database first
-    await initializeAppDatabase();
+    // Initialize database first (synchronous)
+    initializeAppDatabase();
 
     // Setup middleware
     initializeMiddleware();
@@ -169,14 +169,27 @@ async function startServer(): Promise<void> {
       console.log('  - POST /api/truthforge/feedback - Submit feedback');
     });
   } catch (error) {
-    console.error('[Server] Failed to start server:', error);
+    console.error('[Server] Failed to start server:', String(error));
     process.exit(1);
   }
 }
 
-// Start the server if this is the main module
-if (import.meta.url === `file://${process.argv[1]}`) {
-  startServer();
+// Start the server if this is the main module (Windows-safe)
+const isMain =
+  typeof process.argv[1] === 'string' &&
+  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+
+if (isMain) {
+  try {
+    startServer();
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error('[Server] Startup exception:', errMsg);
+    if (err instanceof Error && err.stack) {
+      console.error('[Server] Stack:', err.stack);
+    }
+    process.exit(1);
+  }
 }
 
 export default app;

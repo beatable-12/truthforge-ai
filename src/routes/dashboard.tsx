@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { motion, AnimatePresence } from "framer-motion";
-import { useEffect, useState } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import {
   Search, Sparkles, Check, Loader2, Brain, Network, FileSearch,
   Scale, Gavel, Layers, TrendingUp, Bookmark, Clock, ChevronRight, ArrowUpRight,
@@ -10,65 +10,117 @@ export const Route = createFileRoute("/dashboard")({
   component: Dashboard,
 });
 
-const agentPipeline = [
-  { key: "planner", label: "Planner Activated", icon: Layers, detail: "Decomposing query into 4 sub-claims" },
-  { key: "memory", label: "Memory Retrieved", icon: Brain, detail: "3 related debates found in graph" },
-  { key: "evidence", label: "Evidence Searching", icon: FileSearch, detail: "Scanning 218 sources" },
-  { key: "thesis", label: "Thesis Generated", icon: Network, detail: "Strong position drafted" },
-  { key: "antithesis", label: "Antithesis Generated", icon: Scale, detail: "Counterarguments compiled" },
-  { key: "referee", label: "Referee Evaluating", icon: Gavel, detail: "Weighing argument strength" },
-  { key: "synthesis", label: "Synthesis Complete", icon: Sparkles, detail: "Final answer forged" },
-];
-
-const recentDebates = [
-  { q: "Will AI replace software engineers?", conf: 72, time: "12m" },
-  { q: "Is the EU AI Act enforceable extraterritorially?", conf: 64, time: "1h" },
-  { q: "Are LLMs reasoning or interpolating?", conf: 51, time: "3h" },
-  { q: "Should we adopt SSR for our admin?", conf: 88, time: "1d" },
-];
-
-const savedTopics = ["AI Strategy", "Hiring Decisions", "Architecture", "Market Bets"];
-
-const sampleAnalysis = {
-  question: "Will AI replace software engineers?",
-  analysis:
-    "The question conflates two distinct timeframes and two distinct skill clusters. In the short term (2-4 years), AI will replace specific tasks — boilerplate generation, test scaffolding, routine refactors — but not the role itself. In the longer term, the bottleneck shifts from code-writing to specification, system design, and adversarial review of AI output. Engineers who treat AI as a code-completion tool will be displaced; those who become orchestrators of AI agents will compound their leverage.",
-  signals: [
-    { text: "GitHub Copilot adoption correlates with 55% faster task completion (2024 study, n=2k)", weight: 0.82 },
-    { text: "Job postings for ML/AI engineers grew 74% YoY while general SWE roles declined 8%", weight: 0.74 },
-    { text: "Stack Overflow developer count down 14%, but median compensation up 9%", weight: 0.61 },
-  ],
-  counters: [
-    { text: "Historical automation predictions (low-code, no-code) over-estimated displacement by 3-5x", weight: 0.7 },
-    { text: "LLMs still fail on novel system design at staff+ complexity (HumanEval-X benchmark)", weight: 0.66 },
-  ],
-  confidence: 72,
-  answer:
-    "Replacement is the wrong frame. AI will collapse the bottom of the software profession and raise the ceiling for the top. Within 5 years, expect a barbell market: fewer mid-level roles, more senior orchestrators, and a new class of 'AI-native' generalists. Bet on becoming the latter.",
-};
-
 function Dashboard() {
-  const [stage, setStage] = useState(-1);
-  const [showResult, setShowResult] = useState(true);
-  const [query, setQuery] = useState("Will AI replace software engineers?");
-  const [running, setRunning] = useState(false);
-
+  const renderStart = useRef(typeof performance !== 'undefined' ? performance.now() : Date.now());
   useEffect(() => {
-    if (!running) return;
-    setStage(-1);
-    setShowResult(false);
-    const timers: number[] = [];
-    agentPipeline.forEach((_, i) => {
-      timers.push(window.setTimeout(() => setStage(i), 400 + i * 700));
-    });
-    timers.push(window.setTimeout(() => { setShowResult(true); setRunning(false); }, 400 + agentPipeline.length * 700 + 400));
-    return () => timers.forEach(clearTimeout);
-  }, [running]);
+    const t = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - renderStart.current;
+    try { console.log('[Dashboard] mount render time ms:', t); } catch (e) { /* no-op */ }
+    return () => { try { console.log('[Dashboard] unmount'); } catch (e) { } };
+  }, []);
 
-  function handleAsk(e: React.FormEvent) {
+  const [query, setQuery] = useState("Will AI replace software engineers?");
+  const [isLoading, setIsLoading] = useState(false);
+  const [result, setResult] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleAsk(e: React.FormEvent) {
     e.preventDefault();
-    setRunning(true);
+    if (!query.trim()) return;
+
+    setIsLoading(true);
+    setError(null);
+    setResult(null);
+
+    try {
+      const response = await fetch('http://localhost:3000/api/truthforge/debate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: query }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      setResult(data);
+      console.log('[Dashboard] Debate result:', data);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      setError(msg);
+      console.error('[Dashboard] Error:', msg);
+    } finally {
+      setIsLoading(false);
+    }
   }
+
+  // Build real agent pipeline from execution state
+  const pipelineState = useMemo(() => {
+    if (!result?.execution_state) {
+      return [
+        { key: "planner", label: "Planner Activated", icon: Layers, detail: "", status: "pending" },
+        { key: "memory", label: "Memory Retrieved", icon: Brain, detail: "", status: "pending" },
+        { key: "evidence", label: "Evidence Searching", icon: FileSearch, detail: "", status: "pending" },
+        { key: "thesis", label: "Thesis Generated", icon: Network, detail: "", status: "pending" },
+        { key: "antithesis", label: "Antithesis Generated", icon: Scale, detail: "", status: "pending" },
+        { key: "referee", label: "Referee Evaluating", icon: Gavel, detail: "", status: "pending" },
+        { key: "synthesis", label: "Synthesis Complete", icon: Sparkles, detail: "", status: "pending" },
+      ];
+    }
+
+    const exec = result.execution_state;
+    return [
+      {
+        key: "planner",
+        label: "Planner Activated",
+        icon: Layers,
+        detail: `Complexity: ${result.complexity}`,
+        status: isLoading ? (result ? "done" : "active") : "done",
+      },
+      {
+        key: "memory",
+        label: "Memory Retrieved",
+        icon: Brain,
+        detail: `${exec.memory?.matches_found || 0} related debates found in graph`,
+        status: isLoading ? "done" : "done",
+      },
+      {
+        key: "evidence",
+        label: "Evidence Searching",
+        icon: FileSearch,
+        detail: `Scanned ${exec.evidence?.sources_scanned || 0} sources, found ${exec.evidence?.sources_found?.length || 0}`,
+        status: isLoading ? "done" : "done",
+      },
+      {
+        key: "thesis",
+        label: "Thesis Generated",
+        icon: Network,
+        detail: `${exec.thesis?.total_claims || 0} supporting claims drafted`,
+        status: isLoading ? "done" : "done",
+      },
+      {
+        key: "antithesis",
+        label: "Antithesis Generated",
+        icon: Scale,
+        detail: `${exec.antithesis?.total_counterclaims || 0} counter-claims compiled`,
+        status: isLoading ? "done" : "done",
+      },
+      {
+        key: "referee",
+        label: "Referee Evaluating",
+        icon: Gavel,
+        detail: `Logic: ${(exec.referee?.logic_quality_score * 100 || 0).toFixed(0)}%, Evidence: ${(exec.referee?.evidence_strength_score * 100 || 0).toFixed(0)}%`,
+        status: isLoading ? "done" : "done",
+      },
+      {
+        key: "synthesis",
+        label: "Synthesis Complete",
+        icon: Sparkles,
+        detail: `Final analysis forged with ${result.confidence || 0}% confidence`,
+        status: "done",
+      },
+    ];
+  }, [result, isLoading]);
 
   return (
     <main className="mx-auto max-w-7xl px-4 md:px-6 py-10">
@@ -81,8 +133,8 @@ function Dashboard() {
           </h1>
         </div>
         <div className="hidden md:flex items-center gap-2 text-xs font-mono text-muted-foreground">
-          <span className="w-1.5 h-1.5 rounded-full bg-forge animate-pulse" />
-          7 agents online
+          <span className={`w-1.5 h-1.5 rounded-full ${isLoading ? 'bg-primary animate-pulse' : 'bg-forge animate-pulse'}`} />
+          {isLoading ? 'debating...' : '7 agents online'}
         </div>
       </div>
 
@@ -96,13 +148,13 @@ function Dashboard() {
             placeholder="Ask a difficult question..."
             className="flex-1 bg-transparent outline-none text-base placeholder:text-muted-foreground py-2"
           />
-          <button
+           <button
             type="submit"
-            disabled={running}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-primary text-primary-foreground text-sm font-medium glow-primary disabled:opacity-60"
+            disabled={isLoading}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-primary text-primary-foreground text-sm font-medium glow-primary disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-            {running ? "Forging" : "Forge"}
+            {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+            {isLoading ? 'Forging...' : 'Forge'}
           </button>
         </div>
       </form>
@@ -123,35 +175,31 @@ function Dashboard() {
           <div className="glass rounded-2xl p-5">
             <div className="flex items-center justify-between mb-4">
               <div className="text-sm font-display font-semibold">Agent Activity</div>
-              <div className="text-xs font-mono text-muted-foreground">
-                {stage === -1 ? "idle" : stage >= agentPipeline.length - 1 ? "complete" : "running"}
-              </div>
+              <div className="text-xs font-mono text-muted-foreground">idle</div>
             </div>
             <div className="space-y-2">
-              {agentPipeline.map((a, i) => {
-                const status = running ? (stage >= i ? "done" : stage === i - 1 ? "active" : "pending") :
-                               stage >= i ? "done" : "pending";
-                const active = running && stage === i - 1;
+              {pipelineState.map((a) => {
+                const active = a.status === "active";
                 return (
                   <motion.div
                     key={a.key}
                     initial={false}
-                    animate={{ opacity: status === "pending" ? 0.4 : 1 }}
+                    animate={{ opacity: a.status === "pending" ? 0.55 : 1 }}
                     className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-secondary/40"
                   >
                     <div className={`w-7 h-7 rounded-md flex items-center justify-center shrink-0 ${
-                      status === "done" ? "bg-forge/20 text-forge" :
+                      a.status === "done" ? "bg-forge/20 text-forge" :
                       active ? "bg-primary/20 text-primary-foreground" : "bg-muted/40 text-muted-foreground"
                     }`}>
-                      {status === "done" ? <Check className="w-3.5 h-3.5" /> :
-                       active ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> :
-                       <a.icon className="w-3.5 h-3.5" />}
+                      {a.status === "done" ? <Check className="w-3.5 h-3.5" /> :
+                        active ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> :
+                        <a.icon className="w-3.5 h-3.5" />}
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium">{a.label}</div>
                       <div className="text-xs text-muted-foreground truncate">{a.detail}</div>
                     </div>
-                    {status === "done" && <span className="text-[10px] font-mono text-forge">✓</span>}
+                    {a.status === "done" && <span className="text-[10px] font-mono text-forge">✓</span>}
                   </motion.div>
                 );
               })}
@@ -160,46 +208,56 @@ function Dashboard() {
 
           {/* Output */}
           <AnimatePresence>
-            {showResult && (
+            {(result || error) && (
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 className="glass-strong border-gradient rounded-2xl p-7"
               >
-                <div className="flex items-start justify-between gap-4 mb-6">
-                  <div>
-                    <p className="text-xs font-mono uppercase tracking-widest text-forge mb-2">Intelligence Report</p>
-                    <h2 className="text-2xl font-display font-semibold">{sampleAnalysis.question}</h2>
-                  </div>
-                  <ConfidenceDial value={sampleAnalysis.confidence} />
-                </div>
+                {error ? (
+                  <div className="text-red-400 text-sm">Error: {error}</div>
+                ) : result ? (
+                  <>
+                    <div className="flex items-start justify-between gap-4 mb-6">
+                      <div>
+                        <p className="text-xs font-mono uppercase tracking-widest text-forge mb-2">Intelligence Report</p>
+                        <h2 className="text-2xl font-display font-semibold">{result.question}</h2>
+                      </div>
+                      <ConfidenceDial value={result.confidence || 75} />
+                    </div>
 
-                <Section title="Analysis">
-                  <p className="text-sm leading-relaxed text-foreground/90">{sampleAnalysis.analysis}</p>
-                </Section>
+                    <Section title="Analysis">
+                      <p className="text-sm leading-relaxed text-foreground/90">{result.analysis}</p>
+                    </Section>
 
-                <Section title="Supporting Signals">
-                  <div className="space-y-2">
-                    {sampleAnalysis.signals.map((s, i) => (
-                      <SignalRow key={i} text={s.text} weight={s.weight} color="forge" />
-                    ))}
-                  </div>
-                </Section>
+                    <Section title="Supporting Signals">
+                      <div className="space-y-2">
+                        {(result.supporting_signals || []).map((signal: any, i: number) => {
+                          const weight = typeof signal === 'object' ? signal.weight : 0.75;
+                          const text = typeof signal === 'object' ? signal.text : signal;
+                          return <SignalRow key={i} text={text} weight={weight} color="forge" />;
+                        })}
+                      </div>
+                    </Section>
 
-                <Section title="Counterarguments">
-                  <div className="space-y-2">
-                    {sampleAnalysis.counters.map((s, i) => (
-                      <SignalRow key={i} text={s.text} weight={s.weight} color="violet" />
-                    ))}
-                  </div>
-                </Section>
+                    <Section title="Counterarguments">
+                      <div className="space-y-2">
+                        {(result.counterarguments || []).map((counter: any, i: number) => {
+                          const weight = typeof counter === 'object' ? counter.weight : 0.65;
+                          const text = typeof counter === 'object' ? counter.text : counter;
+                          return <SignalRow key={i} text={text} weight={weight} color="violet" />;
+                        })}
+                      </div>
+                    </Section>
 
-                <Section title="Final Answer">
-                  <div className="relative rounded-xl p-5 bg-gradient-to-br from-primary/10 to-forge/10 border border-border/50">
-                    <Sparkles className="w-4 h-4 text-forge absolute top-4 right-4" />
-                    <p className="text-sm leading-relaxed">{sampleAnalysis.answer}</p>
-                  </div>
-                </Section>
+                    <Section title="Final Answer">
+                      <div className="relative rounded-xl p-5 bg-gradient-to-br from-primary/10 to-forge/10 border border-border/50">
+                        <Sparkles className="w-4 h-4 text-forge absolute top-4 right-4" />
+                        <p className="text-sm leading-relaxed">{result.final_answer}</p>
+                      </div>
+                    </Section>
+                  </>
+                ) : null}
               </motion.div>
             )}
           </AnimatePresence>
@@ -207,38 +265,38 @@ function Dashboard() {
 
         {/* Sidebar */}
         <aside className="space-y-5">
-          <SidebarCard title="Recent Debates" icon={Clock}>
-            <ul className="space-y-2">
-              {recentDebates.map((d) => (
-                <li key={d.q} className="group flex items-start gap-3 p-2.5 rounded-lg hover:bg-accent/50 cursor-pointer transition">
-                  <div className="text-xs font-mono font-semibold w-9 shrink-0 mt-0.5"
-                       style={{ color: d.conf > 75 ? "oklch(0.74 0.18 55)" : d.conf > 60 ? "oklch(0.7 0.18 280)" : "oklch(0.65 0.04 270)" }}>
-                    {d.conf}%
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs leading-snug text-foreground/90 line-clamp-2">{d.q}</div>
-                    <div className="text-[10px] font-mono text-muted-foreground mt-1">{d.time} ago</div>
-                  </div>
-                  <ChevronRight className="w-3.5 h-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition mt-1" />
-                </li>
-              ))}
-            </ul>
-          </SidebarCard>
-
-          <SidebarCard title="Saved Topics" icon={Bookmark}>
-            <div className="flex flex-wrap gap-1.5">
-              {savedTopics.map((t) => (
-                <span key={t} className="text-xs px-2.5 py-1 rounded-md bg-secondary text-foreground/80">{t}</span>
-              ))}
-            </div>
-          </SidebarCard>
+          {/* Current Debate Stats - Real data from last result */}
+          {result && (
+            <SidebarCard title="Current Analysis" icon={TrendingUp}>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Complexity</span>
+                  <span className="text-xs font-mono capitalize font-semibold text-forge">{result.complexity || 'N/A'}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Confidence</span>
+                  <span className="text-xs font-mono font-semibold text-forge">{result.confidence || 0}%</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Sources</span>
+                  <span className="text-xs font-mono font-semibold">{result.execution_state?.evidence?.sources_found?.length || 0}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Logic Quality</span>
+                  <span className="text-xs font-mono font-semibold">{(result.execution_state?.referee?.logic_quality_score * 100 || 0).toFixed(0)}%</span>
+                </div>
+              </div>
+            </SidebarCard>
+          )}
 
           <SidebarCard title="Memory Graph" icon={Network} link>
             <div className="relative h-32 rounded-lg overflow-hidden grid-bg">
               <MiniGraph />
             </div>
             <div className="mt-3 flex items-center justify-between text-xs">
-              <span className="text-muted-foreground font-mono">128 nodes · 412 edges</span>
+              <span className="text-muted-foreground font-mono">
+                {result?.execution_state?.memory?.matches_found || 0} related debates
+              </span>
               <TrendingUp className="w-3.5 h-3.5 text-forge" />
             </div>
           </SidebarCard>

@@ -34,6 +34,16 @@ walker MemoryWalker {
 
         # Structure for memory results
         self.related_memories = [];
+
+        # Fallback: ensure we return at least an empty structured memory to avoid empty responses
+        if len(self.related_memories) == 0 {
+            self.related_memories.append({
+                "id": "memory_none",
+                "summary": "No directly related memories found",
+                "relevance": 0.0,
+                "timestamp": "current_timestamp"
+            });
+        }
     }
 
     can traverse_prior_claims() {

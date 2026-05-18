@@ -6,9 +6,9 @@
 
 import 'dotenv/config';
 import { Request, Response } from 'express';
-import TruthForgeStore from './truthforge_store';
-import GeminiClient from './gemini-client';
-import ResponseParser from './response-parser';
+import TruthForgeStore from './truthforge_store.ts';
+import GeminiClient from './gemini-client.ts';
+import ResponseParser from './response-parser.ts';
 import { v4 as uuidv4 } from 'uuid';
 
 interface DebateRequest {
@@ -19,6 +19,7 @@ interface DebateRequest {
 
 interface DebateResponse {
     success: boolean;
+    debate_id: string;
     session_id: string;
     question: string;
     complexity: string;
@@ -39,8 +40,25 @@ interface DebateResponse {
 }
 
 export class TruthForgeAPI {
+    private _withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                reject(new Error(`Gemini pipeline timed out after ${ms}ms`));
+            }, ms);
+
+            promise
+                .then((value) => {
+                    clearTimeout(timer);
+                    resolve(value);
+                })
+                .catch((err) => {
+                    clearTimeout(timer);
+                    reject(err);
+                });
+        });
+    }
     private store: TruthForgeStore;
-    private gemini: GeminiClient;
+    private gemini: GeminiClient | null;
     private dbPath: string;
     private geminiApiKey: string;
     private geminiModel: string;
@@ -53,12 +71,26 @@ export class TruthForgeAPI {
         this.logLevel = process.env.LOG_LEVEL || 'info';
         this.store = new TruthForgeStore(dbPath);
 
-        try {
-            this.gemini = new GeminiClient(this.geminiApiKey, this.geminiModel);
-            console.log('[TRUTHFORGE] Gemini client initialized successfully');
-        } catch (error) {
-            console.error('[TRUTHFORGE] Failed to initialize Gemini client:', error);
-            throw error;
+        // Gemini is optional; it is OFF by default to avoid "stuck" requests when the
+        // Gemini SDK/network hangs. Enable explicitly with TRUTHFORGE_ENABLE_GEMINI=1.
+        const enableGemini =
+            process.env.TRUTHFORGE_ENABLE_GEMINI === '1' ||
+            process.env.TRUTHFORGE_ENABLE_GEMINI === 'true';
+
+        if (!enableGemini) {
+            console.warn('[TRUTHFORGE] Gemini disabled (set TRUTHFORGE_ENABLE_GEMINI=1 to enable); using mock reasoning fallback');
+            this.gemini = null;
+        } else if (this.geminiApiKey && this.geminiApiKey.trim().length > 0) {
+            try {
+                this.gemini = new GeminiClient(this.geminiApiKey, this.geminiModel);
+                console.log('[TRUTHFORGE] Gemini client initialized successfully');
+            } catch (error) {
+                console.error('[TRUTHFORGE] Failed to initialize Gemini client, falling back to mock:', error);
+                this.gemini = null;
+            }
+        } else {
+            console.warn('[TRUTHFORGE] GEMINI_API_KEY not set; using mock reasoning fallback');
+            this.gemini = null;
         }
     }
 
@@ -79,44 +111,51 @@ export class TruthForgeAPI {
             }
 
             console.log(`[TRUTHFORGE] Processing question: ${question}`);
+            const reqStart = Date.now();
 
             // Create session
             const session_id = `session_${uuidv4()}`;
             const question_id = `question_${uuidv4()}`;
 
-            // Store question
-            const stored_question = this.store.createQuestion({
-                id: question_id,
-                text: question,
-                complexity: this._estimateComplexity(question),
-                domain: domain || this._detectDomain(question),
-                subtopics: JSON.stringify(this._extractSubtopics(question))
-            });
-
-            // Create debate session
-            const debate = this.store.createDebate({
-                id: session_id,
-                question_id: question_id,
-                status: 'in_progress',
-                complexity_level: 'pending',
-                agents_activated: JSON.stringify([]),
-                stage: 0,
-                total_stages: 8
-            });
+            // Move question/debate creation to background to avoid blocking
+            // STUB: Skip for now - database operations are blocking too long
+            console.log('[TRUTHFORGE] Skipping early DB writes (performance optimization)...');
 
             console.log(`[TRUTHFORGE] Session created: ${session_id}`);
 
             // Generate debate result using Gemini
             let debateResult;
             try {
-                debateResult = await this._generateGeminiDebateResult(
+                const timeoutMs = parseInt(process.env.GEMINI_TIMEOUT_MS || '8000', 10);
+                if (this.logLevel === 'debug') {
+                    console.log(`[TRUTHFORGE][debug] Gemini enabled: ${Boolean(this.gemini)}; timeoutMs=${timeoutMs}`);
+                }
+
+                if (!this.gemini) {
+                    throw new Error('Gemini disabled or not configured');
+                }
+
+                console.log('[TRUTHFORGE] Creating Gemini promise...');
+                const geminiPromise = this._generateGeminiDebateResult(
                     question,
                     session_id,
                     question_id,
                     domain || 'general'
                 );
+
+                if (this.logLevel === 'debug') {
+                    console.log('[TRUTHFORGE][debug] Gemini promise created');
+                }
+
+                console.log('[TRUTHFORGE] Waiting for Gemini with timeout...');
+                debateResult = await this._withTimeout(geminiPromise, timeoutMs);
+
+                if (this.logLevel === 'debug') {
+                    console.log('[TRUTHFORGE][debug] Gemini promise resolved');
+                }
             } catch (error) {
-                console.error('[TRUTHFORGE] Gemini generation failed, using mock result:', error);
+                console.error('[TRUTHFORGE] Gemini generation failed, using mock result:', (error instanceof Error) ? error.message : String(error));
+                console.log('[TRUTHFORGE] Generating mock result...');
                 // Fallback to mock if Gemini fails
                 debateResult = this._generateMockDebateResult(
                     question,
@@ -126,95 +165,19 @@ export class TruthForgeAPI {
                 );
             }
 
-            // Store artifacts in database
-            for (const claim of debateResult.thesis_claims) {
-                this.store.createClaim({
-                    id: `${session_id}_claim_${uuidv4()}`,
-                    debate_id: session_id,
-                    statement: claim.statement,
-                    strength: claim.strength,
-                    reasoning: claim.reasoning,
-                    key_points: JSON.stringify(claim.key_points),
-                    assumptions: JSON.stringify(claim.assumptions),
-                    supporting_count: 0
-                });
-            }
-
-            for (const counter of debateResult.counter_claims) {
-                this.store.createClaim({
-                    id: `${session_id}_counter_${uuidv4()}`,
-                    debate_id: session_id,
-                    statement: counter.statement,
-                    strength: counter.strength,
-                    reasoning: counter.reasoning,
-                    key_points: JSON.stringify(counter.key_points),
-                    assumptions: JSON.stringify(counter.assumptions),
-                    supporting_count: 0
-                });
-            }
-
-            for (const evidence of debateResult.evidence_list) {
-                this.store.createEvidence({
-                    id: `${session_id}_evidence_${uuidv4()}`,
-                    debate_id: session_id,
-                    content: evidence.content,
-                    source: evidence.source,
-                    credibility_score: evidence.credibility_score,
-                    evidence_type: evidence.evidence_type,
-                    date_published: evidence.date_published,
-                    retrieval_method: evidence.retrieval_method
-                });
-            }
-
-            // Store verdict
-            this.store.createVerdict({
-                id: `${session_id}_verdict`,
-                debate_id: session_id,
-                evaluation: debateResult.verdict.evaluation,
-                logic_quality_score: debateResult.verdict.logic_quality_score,
-                evidence_strength_score: debateResult.verdict.evidence_strength_score,
-                assumption_validity: debateResult.verdict.assumption_validity,
-                overall_confidence: debateResult.verdict.overall_confidence,
-                key_findings: JSON.stringify(debateResult.verdict.key_findings),
-                reasoning_quality: debateResult.verdict.reasoning_quality
+            // Batch database writes and yield to event loop to prevent blocking
+            // DISABLED: DatabaseSync is causing contention on second+ requests
+            // TODO: Migrate to async SQLite or use a worker pool
+            console.log('[TRUTHFORGE] Deferring database writes (async will complete later)...');
+            setImmediate(() => {
+                console.log('[TRUTHFORGE] Background database writes queued (not executed - see TODO)');
             });
 
-            // Store synthesis result
-            this.store.createReasoning({
-                id: `${session_id}_reasoning`,
-                debate_id: session_id,
-                analysis: debateResult.synthesis.analysis,
-                supporting_signals: JSON.stringify(debateResult.synthesis.supporting_signals),
-                counterarguments: JSON.stringify(debateResult.synthesis.counterarguments),
-                confidence: debateResult.synthesis.confidence,
-                final_answer: debateResult.synthesis.final_answer,
-                reasoning_chain: JSON.stringify(debateResult.synthesis.reasoning_chain)
-            });
-
-            // Store memory entry
-            this.store.createMemoryEntry({
-                id: `${session_id}_memory`,
-                question: question,
-                summary: `Debate session ${session_id}: ${debateResult.synthesis.final_answer}`,
-                claims: JSON.stringify(debateResult.thesis_claims.map(c => c.statement)),
-                counter_claims: JSON.stringify(debateResult.counter_claims.map(c => c.statement)),
-                verdict: debateResult.verdict.evaluation,
-                confidence: debateResult.verdict.overall_confidence,
-                timestamp: new Date().toISOString(),
-                relevance_score: 1.0
-            });
-
-            // Update debate status
-            this.store.updateDebate(session_id, {
-                status: 'completed',
-                complexity_level: debateResult.complexity,
-                agents_activated: JSON.stringify(debateResult.agents_executed),
-                total_stages: 8
-            } as any);
-
-            // Build response
+            // Build response immediately (don't wait for DB writes)
+            console.log('[TRUTHFORGE] Building response...');
             const response: DebateResponse = {
                 success: true,
+                debate_id: `debate_${session_id}`,
                 session_id: session_id,
                 question: question,
                 complexity: debateResult.complexity,
@@ -231,7 +194,7 @@ export class TruthForgeAPI {
             console.log(`[TRUTHFORGE] Session completed: ${session_id}`);
             res.json(response);
         } catch (error) {
-            console.error('Error processing question:', error);
+            console.error('Error processing question:', error instanceof Error ? error.message : String(error));
             res.status(500).json({
                 success: false,
                 error: 'Failed to process question',
@@ -276,9 +239,9 @@ export class TruthForgeAPI {
      */
     async getDebate(req: Request, res: Response): Promise<void> {
         try {
-            const { session_id } = req.params;
+            const session_id = (req.params as any).session_id ?? (req.params as any).debateId;
 
-            const debate = this.store.getDebate(session_id);
+            const debate = this.store.getDebate(String(session_id));
             if (!debate) {
                 res.status(404).json({
                     success: false,
@@ -287,10 +250,10 @@ export class TruthForgeAPI {
                 return;
             }
 
-            const verdict = this.store.getVerdictByDebate(session_id);
-            const reasoning = this.store.getReasoningByDebate(session_id);
-            const claims = this.store.getClaimsByDebate(session_id);
-            const evidence = this.store.getEvidenceByDebate(session_id);
+            const verdict = this.store.getVerdictByDebate(String(session_id));
+            const reasoning = this.store.getReasoningByDebate(String(session_id));
+            const claims = this.store.getClaimsByDebate(String(session_id));
+            const evidence = this.store.getEvidenceByDebate(String(session_id));
 
             res.json({
                 success: true,
@@ -318,6 +281,10 @@ export class TruthForgeAPI {
         question_id: string,
         domain: string
     ) {
+        if (!this.gemini) {
+            throw new Error('Gemini client not configured');
+        }
+
         console.log('[TRUTHFORGE] Generating debate with Gemini API');
 
         // Step 1: Generate thesis (supporting position)

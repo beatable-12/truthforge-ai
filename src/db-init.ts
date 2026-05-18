@@ -3,7 +3,7 @@
  * Handles SQLite database setup and schema migration on app startup
  */
 
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -23,9 +23,9 @@ export interface InitializationResult {
  * Initialize the SQLite database on application startup
  * Creates database file, runs schema, and verifies all tables exist
  */
-export async function initializeDatabase(
+export function initializeDatabase(
   dbPath: string = process.env.TRUTHFORGE_DB_PATH || './truthforge.db'
-): Promise<InitializationResult> {
+): InitializationResult {
   const startTime = Date.now();
   const timestamp = new Date().toISOString();
 
@@ -41,11 +41,11 @@ export async function initializeDatabase(
     }
 
     // Open or create database
-    const db = new Database(dbPath);
+    const db = new DatabaseSync(dbPath);
     console.log(`[DB Init] Database connection established`);
 
     // Enable foreign keys
-    db.pragma('foreign_keys = ON');
+    db.exec('PRAGMA foreign_keys = ON;');
     console.log(`[DB Init] Foreign keys enabled`);
 
     // Read schema file
@@ -160,7 +160,7 @@ export function checkDatabaseHealth(
   timestamp: string;
 } {
   try {
-    const db = new Database(dbPath);
+    const db = new DatabaseSync(dbPath);
 
     // Test basic connectivity
     const result = db.prepare('SELECT 1').get();
@@ -193,9 +193,9 @@ export function checkDatabaseHealth(
  * Reset database (development only)
  * Drops all tables and recreates from schema
  */
-export async function resetDatabase(
+export function resetDatabase(
   dbPath: string = process.env.TRUTHFORGE_DB_PATH || './truthforge.db'
-): Promise<InitializationResult> {
+): InitializationResult {
   if (process.env.NODE_ENV === 'production') {
     throw new Error('Database reset is not allowed in production');
   }
@@ -203,7 +203,7 @@ export async function resetDatabase(
   try {
     console.log(`[DB Reset] Starting database reset`);
 
-    const db = new Database(dbPath);
+    const db = new DatabaseSync(dbPath);
 
     // Get all tables
     const tables = db

@@ -4,7 +4,7 @@
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
-import { TruthForgeAPI } from '../truthforge_api';
+import { TruthForgeAPI } from './truthforge_api.ts';
 import { v4 as uuidv4 } from 'uuid';
 
 export interface ExtendedRequest extends Request {
@@ -25,9 +25,16 @@ export interface ExtendedRequest extends Request {
 
 const router = Router();
 
-// Initialize TruthForge API
-const dbPath = process.env.TRUTHFORGE_DB_PATH || './truthforge.db';
-const truthforgeApi = new TruthForgeAPI(dbPath);
+// Initialize TruthForge API lazily
+let truthforgeApi: TruthForgeAPI | null = null;
+
+function getTruthForgeApi(): TruthForgeAPI {
+  if (!truthforgeApi) {
+    const dbPath = process.env.TRUTHFORGE_DB_PATH || './truthforge.db';
+    truthforgeApi = new TruthForgeAPI(dbPath);
+  }
+  return truthforgeApi;
+}
 
 /**
  * Health Check Endpoint
@@ -79,7 +86,7 @@ router.post('/debate', async (req: ExtendedRequest, res: Response, next: NextFun
     );
 
     // Call TruthForge API
-    await truthforgeApi.processQuestion(req, res);
+    await getTruthForgeApi().processQuestion(req, res);
 
     const duration = Date.now() - startTime;
     console.log(`[TRUTHFORGE] Debate ${debate_id} completed in ${duration}ms`);
@@ -108,7 +115,7 @@ router.get('/debate/:debateId', async (req: ExtendedRequest, res: Response, next
     console.log(`[TRUTHFORGE] Retrieving debate: ${debateId}`);
 
     // Call getDebate method
-    await truthforgeApi.getDebate(req as any, res);
+    await getTruthForgeApi().getDebate(req as any, res);
   } catch (error) {
     console.error('[TRUTHFORGE] Error retrieving debate:', error);
     next(error);

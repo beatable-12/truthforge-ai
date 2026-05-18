@@ -45,13 +45,28 @@ export interface ErrorResponse {
 }
 
 const API_BASE_URL = 'http://localhost:3000/api/truthforge';
+const REQUEST_TIMEOUT_MS = 15000;
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId: ReturnType<typeof setTimeout> = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 /**
  * Health check for API
  */
 export async function checkApiHealth(): Promise<boolean> {
   try {
-    const response = await fetch(`${API_BASE_URL}/health`);
+    const response = await fetchWithTimeout(`${API_BASE_URL}/health`);
     return response.ok;
   } catch {
     return false;
@@ -63,7 +78,7 @@ export async function checkApiHealth(): Promise<boolean> {
  */
 export async function submitDebateQuestion(request: DebateRequest): Promise<DebateResponse> {
   try {
-    const response = await fetch(`${API_BASE_URL}/debate`, {
+    const response = await fetchWithTimeout(`${API_BASE_URL}/debate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -89,7 +104,7 @@ export async function submitDebateQuestion(request: DebateRequest): Promise<Deba
  */
 export async function getDebate(debateId: string): Promise<DebateResponse> {
   try {
-    const response = await fetch(`${API_BASE_URL}/debate/${debateId}`);
+    const response = await fetchWithTimeout(`${API_BASE_URL}/debate/${debateId}`);
     const data = await response.json();
 
     if (!response.ok) {
@@ -109,7 +124,7 @@ export async function getDebate(debateId: string): Promise<DebateResponse> {
 export async function listDebates(limit: number = 10, offset: number = 0): Promise<{ debates: DebateResponse[]; total: number }> {
   try {
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-    const response = await fetch(`${API_BASE_URL}/debates?${params}`);
+    const response = await fetchWithTimeout(`${API_BASE_URL}/debates?${params}`);
     const data = await response.json();
 
     if (!response.ok) {
@@ -128,7 +143,7 @@ export async function listDebates(limit: number = 10, offset: number = 0): Promi
  */
 export async function getMemory(memoryId: string): Promise<unknown> {
   try {
-    const response = await fetch(`${API_BASE_URL}/memory/${memoryId}`);
+    const response = await fetchWithTimeout(`${API_BASE_URL}/memory/${memoryId}`);
     const data = await response.json();
 
     if (!response.ok) {
@@ -152,7 +167,7 @@ export async function submitFeedback(
   helpful?: boolean
 ): Promise<{ success: boolean; feedback_id: string; timestamp: string }> {
   try {
-    const response = await fetch(`${API_BASE_URL}/feedback`, {
+    const response = await fetchWithTimeout(`${API_BASE_URL}/feedback`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

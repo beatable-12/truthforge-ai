@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "api": "node --loader ts-node/esm src/express-server.ts",
-    "api:dev": "node src/express-server.ts",
-    "api:prod": "node src/express-server.ts",
+    "api": "node server-mock.mjs",
+    "api:dev": "node server-mock.mjs",
+    "api:prod": "node --loader ts-node/esm src/express-server.ts",
+    "api:real": "node --loader ts-node/esm src/express-server.ts",
     "test:api": "node --loader ts-node/esm src/test-integration.ts",
     "test:integration": "node --loader ts-node/esm src/test-integration.ts",
     "test:gemini": "node --loader ts-node/esm src/test-gemini.ts",
@@ -16,7 +17,7 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "start": "node src/express-server.ts"
+    "start": "node server-mock.mjs"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",

@@ -74,3 +74,19 @@ edge contributes_to {
     has contribution_type: str = "";  # "supporting", "constraining", "neutral"
     has timestamp: str = "";
 }
+
+# references - Node references an external source or document
+edge references {
+    has weight: float = 1.0;
+    has citation: str = "";
+    has url: str = "";
+    has timestamp: str = "";
+}
+
+# similar_to - Node is semantically similar to another node
+edge similar_to {
+    has weight: float = 1.0;
+    has similarity_score: float = 0.0;  # 0-1
+    has relation_type: str = "semantic";
+    has timestamp: str = "";
+}

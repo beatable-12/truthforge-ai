@@ -3,9 +3,12 @@
  * TypeScript wrapper for SQLite persistence
  */
 
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export interface Debate {
     id: string;
@@ -105,13 +108,13 @@ export interface MemoryEntry {
 }
 
 export class TruthForgeStore {
-    private db: Database.Database;
+    private db: DatabaseSync;
     private dbPath: string;
     private isInitialized: boolean = false;
 
     constructor(dbPath: string = './truthforge.db') {
         this.dbPath = dbPath;
-        this.db = new Database(dbPath);
+        this.db = new DatabaseSync(dbPath);
         this.isInitialized = false;
     }
 
@@ -128,7 +131,7 @@ export class TruthForgeStore {
             const schemaPath = path.join(__dirname, './truthforge_schema.sql');
             const schema = readFileSync(schemaPath, 'utf-8');
             this.db.exec(schema);
-            this.db.pragma('foreign_keys = ON');
+            this.db.exec('PRAGMA foreign_keys = ON;');
             this.isInitialized = true;
             console.log('[TruthForgeStore] Schema initialized successfully');
         } catch (error) {

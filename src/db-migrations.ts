@@ -3,20 +3,20 @@
  * Handles database schema versioning and migrations
  */
 
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 
 export interface Migration {
   version: string;
   name: string;
-  up: (db: Database.Database) => void;
-  down?: (db: Database.Database) => void;
+  up: (db: DatabaseSync) => void;
+  down?: (db: DatabaseSync) => void;
 }
 
 export class MigrationManager {
-  private db: Database.Database;
+  private db: DatabaseSync;
   private migrations: Migration[] = [];
 
-  constructor(db: Database.Database) {
+  constructor(db: DatabaseSync) {
     this.db = db;
     this.createMigrationsTable();
   }

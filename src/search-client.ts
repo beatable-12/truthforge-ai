@@ -3,7 +3,7 @@
  * Wrapper for Google Custom Search API with caching and rate limiting
  */
 
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 
 export interface SearchResult {
   url: string;
@@ -37,9 +37,10 @@ export class WebSearchClient {
   private resultLimit: number;
   private cacheTtlDays: number;
   private minCredibilityScore: number;
-  private db: Database.Database;
+  private db: DatabaseSync;
   private requestLog: Map<string, number[]> = new Map();
   private readonly REQUESTS_PER_MINUTE = 5; // Conservative rate limit
+  private readonly REQUEST_TIMEOUT_MS = 15000;
 
   constructor(dbPath: string = process.env.TRUTHFORGE_DB_PATH || './truthforge.db') {
     this.apiKey = process.env.GOOGLE_SEARCH_API_KEY || '';
@@ -47,7 +48,7 @@ export class WebSearchClient {
     this.resultLimit = parseInt(process.env.SEARCH_RESULT_LIMIT || '10', 10);
     this.cacheTtlDays = parseInt(process.env.SEARCH_CACHE_TTL_DAYS || '7', 10);
     this.minCredibilityScore = parseFloat(process.env.MIN_CREDIBILITY_SCORE || '0.75');
-    this.db = new Database(dbPath);
+    this.db = new DatabaseSync(dbPath);
     this.ensureCacheTable();
     this.logSearch('WebSearchClient initialized', '');
   }
@@ -97,6 +98,23 @@ export class WebSearchClient {
     }
 
     return totalRequests >= this.REQUESTS_PER_MINUTE;
+  }
+
+  /**
+   * Fetch with a hard timeout so a dead upstream cannot stall the operation.
+   */
+  private async fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId: ReturnType<typeof setTimeout> = setTimeout(() => controller.abort(), this.REQUEST_TIMEOUT_MS);
+
+    try {
+      return await fetch(input, {
+        ...init,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   /**
@@ -188,7 +206,7 @@ export class WebSearchClient {
       url.searchParams.append('cx', this.engineId);
       url.searchParams.append('num', String(this.resultLimit));
 
-      const response = await fetch(url.toString());
+      const response = await this.fetchWithTimeout(url.toString());
 
       if (!response.ok) {
         this.logSearch(query, `API error: ${response.status}`);

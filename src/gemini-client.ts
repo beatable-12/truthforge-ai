@@ -3,7 +3,8 @@
  * Wrapper for Google Gemini API with error handling, retries, and logging
  */
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 interface GeminiResponse {
   text: string;
@@ -18,7 +19,7 @@ interface AnalysisResult {
 }
 
 export class GeminiClient {
-  private client: GoogleGenerativeAI;
+  private apiKey: string;
   private model: string;
   private maxRetries: number = 3;
   private retryDelayMs: number = 1000;
@@ -29,7 +30,7 @@ export class GeminiClient {
       throw new Error('GEMINI_API_KEY environment variable is not set');
     }
 
-    this.client = new GoogleGenerativeAI(key);
+    this.apiKey = key;
     this.model = model || process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 
     this.log('info', `Gemini client initialized with model: ${this.model}`);
@@ -262,35 +263,109 @@ All scores should be between 0 and 1.`;
   private async _callGeminiWithRetry(prompt: string): Promise<string> {
     let lastError: Error | null = null;
 
+    const isNonRetryable = (msg: string): boolean => {
+      const m = msg.toLowerCase();
+      return (
+        m.includes('429') ||
+        m.includes('quota exceeded') ||
+        m.includes('rate limit') ||
+        m.includes('permission') ||
+        m.includes('api key')
+      );
+    };
+
+    const getPerCallTimeoutMs = (): number => {
+      const raw =
+        process.env.GEMINI_CALL_TIMEOUT_MS ||
+        process.env.GEMINI_TIMEOUT_MS ||
+        '8000';
+      const ms = parseInt(raw, 10);
+      return Number.isFinite(ms) && ms > 0 ? ms : 8000;
+    };
+
+    const helperPath = fileURLToPath(new URL('./gemini-subprocess.mjs', import.meta.url));
+
+    const generateInSubprocess = (promptText: string, timeoutMs: number): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [helperPath], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: {
+            ...process.env,
+            GEMINI_API_KEY: this.apiKey,
+            GEMINI_MODEL: this.model,
+            GEMINI_CALL_TIMEOUT_MS: String(timeoutMs)
+          }
+        });
+
+        let out = '';
+        let err = '';
+
+        const killTimer = setTimeout(() => {
+          child.kill();
+          reject(new Error(`Gemini subprocess timed out after ${timeoutMs}ms`));
+        }, timeoutMs + 500);
+
+        child.stdout.setEncoding('utf8');
+        child.stderr.setEncoding('utf8');
+        child.stdout.on('data', (d) => (out += d));
+        child.stderr.on('data', (d) => (err += d));
+
+        child.on('error', (e) => {
+          clearTimeout(killTimer);
+          reject(e);
+        });
+
+        child.on('close', (code) => {
+          clearTimeout(killTimer);
+          try {
+            const msg = out ? JSON.parse(out) : null;
+            if (msg?.ok) {
+              resolve(String(msg.text ?? ''));
+            } else {
+              reject(new Error(String(msg?.error || err || `Gemini subprocess failed (code ${code})`)));
+            }
+          } catch (e) {
+            reject(new Error(`Failed to parse Gemini subprocess response: ${String(e)}; stdout=${out.slice(0, 200)}; stderr=${err.slice(0, 200)}`));
+          }
+        });
+
+        const payload = JSON.stringify({ prompt: promptText, timeoutMs, model: this.model });
+        child.stdin.write(payload);
+        child.stdin.end();
+      });
+    };
+
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
-        this.log('debug', `Calling Gemini API (attempt ${attempt}/${this.maxRetries})`);
+        const timeoutMs = getPerCallTimeoutMs();
+        this.log('debug', `Calling Gemini API (attempt ${attempt}/${this.maxRetries}, timeout=${timeoutMs}ms)`);
 
-        const model = this.client.getGenerativeModel({ model: this.model });
-        const result = await model.generateContent(prompt);
-        const response = result.response;
+        const text = await generateInSubprocess(prompt, timeoutMs);
 
-        if (!response.text()) {
+        if (!text) {
           throw new Error('Empty response from Gemini API');
         }
 
         this.log('debug', `Gemini API call successful`);
-        return response.text();
+        return text;
       } catch (error) {
         lastError = error as Error;
         this.log('warn', `Gemini API call failed (attempt ${attempt}): ${lastError.message}`);
 
+        // Quota/rate-limit/auth errors should fail fast so the API can fall back.
+        if (isNonRetryable(lastError.message)) {
+          break;
+        }
+
         if (attempt < this.maxRetries) {
           const delay = this.retryDelayMs * Math.pow(2, attempt - 1);
           this.log('debug', `Retrying in ${delay}ms...`);
-          await new Promise(resolve => setTimeout(resolve, delay));
+          await new Promise((resolve) => setTimeout(resolve, delay));
         }
       }
     }
 
-    throw new Error(
-      `Gemini API call failed after ${this.maxRetries} attempts: ${lastError?.message}`
-    );
+    throw new Error(`Gemini API call failed: ${lastError?.message}`);
   }
 
   /**

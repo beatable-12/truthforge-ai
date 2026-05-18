@@ -208,7 +208,7 @@ graph DebateGraph {
     }
 
     can run_debate(question: str) -> dict {
-        """Main orchestration: Run complete debate workflow"""
+        """Main orchestration: Run complete debate workflow using Planner's execution plan"""
 
         let session_id = self.generate_session_id();
         let question_id = f"question_{session_id}";
@@ -237,58 +237,139 @@ graph DebateGraph {
             complexity = "complex";
         }
 
-        let agents_executed = plan["agents_to_activate"];
-
-        # Step 2: Memory Retrieval
+        # Prepare containers for agent outputs (guarantee they exist)
         let memory_context = {};
-        if "memory" in agents_executed {
-            memory_context = self.execute_memory(question);
-        }
-        else {
-            self.log_execution("\n[ORCHESTRATOR] Step 2: MEMORY - Skipped (not required for simple questions)");
-        }
-
-        # Step 3: Thesis Generation
-        let thesis_result = self.execute_thesis(session_id);
-
-        # Step 4: Antithesis Generation
-        let antithesis_result = self.execute_antithesis(thesis_result, session_id);
-
-        # Step 5: Evidence Gathering
+        let thesis_result = {};
+        let antithesis_result = {};
         let evidence_list = [];
-        if "evidence" in agents_executed {
-            evidence_list = self.execute_evidence(thesis_result, antithesis_result, session_id);
+        let verdict = {};
+        let synthesis_result = {};
+        let persistence_result = {"persistence_validated": False};
+
+        let agents_executed = [];
+
+        # Execute agents according to plan_steps produced by PlannerWalker
+        let steps = plan.get("plan_steps", []);
+        # Sort by step to ensure intended order
+        steps = sorted(steps, key=lambda s: s.get("step", 0));
+
+        for step in steps {
+            let agent = step.get("agent", "");
+            if agent == "" {
+                continue;
+            }
+
+            # Log activation
+            self.log_execution(f"\n[ORCHESTRATOR] ACTIVATING AGENT: {agent} - {step.get('reason', '')}");
+
+            # Execute agent with defensive checks and fallbacks
+            if agent == "memory" {
+                memory_context = self.execute_memory(question);
+                if len(memory_context.keys()) == 0 {
+                    self.log_execution("[ORCHESTRATOR] WARNING: MemoryWalker returned empty context");
+                }
+                agents_executed.append("memory");
+            }
+            elif agent == "thesis" {
+                thesis_result = self.execute_thesis(session_id);
+                if len(thesis_result.keys()) == 0 {
+                    self.log_execution("[ORCHESTRATOR] WARNING: ThesisWalker returned empty result - creating fallback");
+                    thesis_result = {"total_claims": 0, "primary_claim": {"statement": question}, "supporting_claims": []};
+                }
+                agents_executed.append("thesis");
+            }
+            elif agent == "antithesis" {
+                # Ensure thesis_result present
+                let tclaims = thesis_result.get("supporting_claims", []);
+                if len(tclaims) == 0 {
+                    tclaims = [thesis_result.get("primary_claim", {})];
+                }
+                antithesis_result = self.execute_antithesis(thesis_result, session_id);
+                if len(antithesis_result.keys()) == 0 {
+                    self.log_execution("[ORCHESTRATOR] WARNING: AntithesisWalker returned empty result");
+                    antithesis_result = {"total_counter_claims": 0, "primary_counter": {}, "supporting_counters": []};
+                }
+                agents_executed.append("antithesis");
+            }
+            elif agent == "evidence" {
+                evidence_list = self.execute_evidence(thesis_result, antithesis_result, session_id);
+                if len(evidence_list) == 0 {
+                    self.log_execution("[ORCHESTRATOR] WARNING: EvidenceWalker returned no evidence");
+                    evidence_list = [];
+                }
+                agents_executed.append("evidence");
+            }
+            elif agent == "referee" {
+                verdict = self.execute_referee(thesis_result, antithesis_result, evidence_list, session_id);
+                if len(verdict.keys()) == 0 {
+                    self.log_execution("[ORCHESTRATOR] WARNING: RefereeWalker returned empty verdict - using conservative defaults");
+                    verdict = {"overall_confidence": 0.5, "evaluation": "inconclusive"};
+                }
+                agents_executed.append("referee");
+            }
+            elif agent == "synthesis" {
+                synthesis_result = self.execute_synthesis(question, thesis_result, antithesis_result, evidence_list, verdict, session_id);
+                if len(synthesis_result.keys()) == 0 {
+                    self.log_execution("[ORCHESTRATOR] WARNING: SynthesisWalker returned empty result");
+                    synthesis_result = {"final_answer": "Unable to synthesize", "confidence": "Very Low"};
+                }
+                agents_executed.append("synthesis");
+            }
+            elif agent == "memory_update" {
+                persistence_result = self.execute_memory_update(
+                    session_id,
+                    question_id,
+                    question,
+                    complexity,
+                    thesis_result,
+                    antithesis_result,
+                    evidence_list,
+                    verdict,
+                    synthesis_result,
+                    agents_executed
+                );
+                if persistence_result.get("persistence_validated") is not True {
+                    self.log_execution("[ORCHESTRATOR] WARNING: MemoryUpdateWalker reported validation failure");
+                }
+                agents_executed.append("memory_update");
+            }
+            else {
+                # Unknown agent - log and skip
+                self.log_execution(f"[ORCHESTRATOR] WARNING: Unknown agent '{agent}' in plan - skipping");
+            }
         }
-        else {
-            self.log_execution("\n[ORCHESTRATOR] Step 5: EVIDENCE - Skipped (minimal evidence needed for simple questions)");
+
+        # Ensure we always have a synthesis and persistence at the end
+        if len(synthesis_result.keys()) == 0 {
+            synthesis_result = self.execute_synthesis(question, thesis_result, antithesis_result, evidence_list, verdict, session_id);
+            if len(synthesis_result.keys()) == 0 {
+                self.log_execution("[ORCHESTRATOR] ERROR: Final synthesis failed");
+            }
+            if "synthesis" not in agents_executed {
+                agents_executed.append("synthesis");
+            }
         }
 
-        # Step 6: Referee Evaluation
-        let verdict = self.execute_referee(thesis_result, antithesis_result, evidence_list, session_id);
-
-        # Step 7: Synthesis
-        let synthesis_result = self.execute_synthesis(
-            question,
-            thesis_result,
-            antithesis_result,
-            evidence_list,
-            verdict,
-            session_id
-        );
-
-        # Step 8: Memory Update (Persistence)
-        let persistence_result = self.execute_memory_update(
-            session_id,
-            question_id,
-            question,
-            complexity,
-            thesis_result,
-            antithesis_result,
-            evidence_list,
-            verdict,
-            synthesis_result,
-            agents_executed
-        );
+        if persistence_result.get("persistence_validated") is not True {
+            persistence_result = self.execute_memory_update(
+                session_id,
+                question_id,
+                question,
+                complexity,
+                thesis_result,
+                antithesis_result,
+                evidence_list,
+                verdict,
+                synthesis_result,
+                agents_executed
+            );
+            if persistence_result.get("persistence_validated") is not True {
+                self.log_execution("[ORCHESTRATOR] ERROR: Final persistence attempt failed");
+            }
+            if "memory_update" not in agents_executed {
+                agents_executed.append("memory_update");
+            }
+        }
 
         # Final summary
         self.log_execution("\n╔════════════════════════════════════════════════════╗");
@@ -298,7 +379,7 @@ graph DebateGraph {
         self.log_execution(f"\nSession: {session_id}");
         self.log_execution(f"Complexity: {complexity}");
         self.log_execution(f"Agents Executed: {', '.join(agents_executed)}");
-        self.log_execution(f"Thesis Claims: {thesis_result.get('total_claims', 0)}");
+        self.log_execution(f"Thesis Claims: {thesis_result.get('total_claims', thesis_result.get('total_claims', 0))}");
         self.log_execution(f"Counter-Claims: {antithesis_result.get('total_counter_claims', 0)}");
         self.log_execution(f"Evidence Gathered: {len(evidence_list)}");
         self.log_execution(f"Verdict Confidence: {verdict.get('overall_confidence', 0):.2f}");
@@ -326,8 +407,34 @@ graph DebateGraph {
 
 # Main entry point
 can initialize_truthforge() -> DebateGraph {
-    """Initialize TruthForge debate engine"""
+    """Initialize TruthForge debate engine and validate core graph structure"""
     let debate_graph = DebateGraph();
+
+    # Basic validations for expected nodes and edges
+    let required_nodes = ["Question","Topic","Claim","CounterClaim","Evidence","Verdict","DebateSession","MemoryRecord"];
+    let required_edges = ["supports","attacks","validated_by","related_to","generated_from","discussed_in","references","similar_to"];
+
     print("TruthForge AI - Backend Core Initialized");
+    print("[VALIDATION] Verifying required relation types and node aliases...");
+
+    # Validate relation types from config
+    let missing_relations = [];
+    for rel in required_edges {
+        if rel not in RELATION_TYPES {
+            missing_relations.append(rel);
+        }
+    }
+
+    if len(missing_relations) > 0 {
+        print(f"[VALIDATION] ⚠ Missing relation types: {', '.join(missing_relations)}");
+    }
+    else {
+        print("[VALIDATION] ✓ All required relation types present");
+    }
+
+    # Node validation: recommend verifying node definitions exist (MemoryRecord alias added for compatibility)
+    print("[VALIDATION] Note: MemoryRecord alias was added to truthforge_nodes.jac for compatibility with expected node names.");
+
+
     return debate_graph;
 }
