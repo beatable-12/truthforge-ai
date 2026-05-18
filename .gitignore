@@ -22,11 +22,20 @@ dist-ssr
 .env.production
 .env.example
 
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
 # Documentation - ALL .md files except README
 *.md
 !README.md
 
-# Local startup/batch files (Windows)
+# Local startup/batch/script files (Windows & Shell)
+*.bat
+*.ps1
+*.py
+*.sh
 start_api.bat
 startup.bat
 setup_windows.bat
@@ -35,6 +44,9 @@ run_tests.bat
 verify_setup.bat
 remove_md_files.bat
 pull_md_files.bat
+
+# Text documentation files
+*.txt
 
 # Wrangler / Cloudflare
 .wrangler/
