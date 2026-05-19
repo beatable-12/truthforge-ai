@@ -1,6 +1,7 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import { motion } from "framer-motion";
 import { LogoMark } from "./LogoMark";
+import { useAuth } from "@/hooks/useAuth";
 
 const navItems = [
   { to: "/", label: "Home" },
@@ -12,6 +13,7 @@ const navItems = [
 
 export function Nav() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const { user, logout } = useAuth();
 
   return (
     <motion.header
@@ -58,12 +60,45 @@ export function Nav() {
           </nav>
 
           <div className="flex items-center gap-2">
-            <Link
-              to="/dashboard"
-              className="hidden sm:inline-flex relative items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-gradient-primary text-primary-foreground hover:opacity-90 transition glow-primary"
-            >
-              Launch
-            </Link>
+            {!user ? (
+              <>
+                <Link to="/login" className="hidden sm:inline-flex px-3 py-1.5 text-sm font-medium text-foreground hover:text-forge transition">
+                  Login
+                </Link>
+                <Link
+                  to="/signup"
+                  className="hidden sm:inline-flex relative items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-gradient-primary text-primary-foreground hover:opacity-90 transition glow-primary"
+                >
+                  Sign Up
+                </Link>
+              </>
+            ) : (
+              <>
+                <div className="hidden sm:inline-flex items-center gap-3">
+                  <div className="text-sm font-medium text-muted-foreground mr-2">
+                    <span className="capitalize">{user.plan}</span> Plan
+                  </div>
+                  <Link
+                    to="/dashboard"
+                    className="relative items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium bg-gradient-primary text-primary-foreground hover:opacity-90 transition glow-primary"
+                  >
+                    Dashboard
+                  </Link>
+                  <Link
+                    to="/profile"
+                    className="px-3 py-1.5 text-sm font-medium text-foreground hover:text-forge transition"
+                  >
+                    Profile
+                  </Link>
+                  <button
+                    onClick={() => logout()}
+                    className="px-3 py-1.5 text-sm font-medium text-foreground hover:text-destructive transition"
+                  >
+                    Logout
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>

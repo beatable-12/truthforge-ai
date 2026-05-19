@@ -24,13 +24,147 @@ app.use(cors({
 
 app.use(express.json());
 
+// ─── DB Setup ───────────────────────────────────────────────────────────────
+import { DatabaseSync } from 'node:sqlite';
+const db = new DatabaseSync('./truthforge.db');
+
+// Ensure tables exist
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        avatar TEXT,
+        plan TEXT DEFAULT 'free',
+        debate_count INTEGER DEFAULT 0,
+        saved_memories INTEGER DEFAULT 0,
+        history TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS subscriptions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        plan_id TEXT NOT NULL,
+        status TEXT DEFAULT 'active',
+        current_period_end TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        UNIQUE(user_id)
+    );
+    CREATE TABLE IF NOT EXISTS user_sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        expires_at TIMESTAMP NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+  `);
+} catch (err) {
+  console.warn('[SERVER] Could not init db schema', err);
+}
+
+// ─── Auth Middleware ────────────────────────────────────────────────────────
+app.use((req, res, next) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (token) {
+    try {
+      const session = db.prepare('SELECT user_id, expires_at FROM user_sessions WHERE id = ?').get(token);
+      if (session && new Date(session.expires_at) > new Date()) {
+        const user = db.prepare('SELECT * FROM users WHERE id = ?').get(session.user_id);
+        if (user) req.user = user;
+      }
+    } catch {}
+  }
+  next();
+});
+
+// ─── Auth Endpoints ─────────────────────────────────────────────────────────
+
+app.post('/api/auth/signup', (req, res) => {
+  const { name, email, password } = req.body;
+  if (!name || !email || !password) return res.status(400).json({ error: 'Missing fields' });
+  
+  try {
+    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    if (existing) return res.status(400).json({ error: 'Email already exists' });
+    
+    const userId = uuidv4();
+    // In a real app we'd bcrypt the password.
+    db.prepare('INSERT INTO users (id, name, email, password_hash, plan) VALUES (?, ?, ?, ?, ?)').run(userId, name, email, password, 'free');
+    db.prepare('INSERT INTO subscriptions (id, user_id, plan_id) VALUES (?, ?, ?)').run(uuidv4(), userId, 'free');
+    
+    const token = uuidv4();
+    const expires = new Date();
+    expires.setDate(expires.getDate() + 30);
+    
+    db.prepare('INSERT INTO user_sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(token, userId, expires.toISOString());
+    
+    const user = db.prepare('SELECT id, name, email, avatar, plan FROM users WHERE id = ?').get(userId);
+    res.json({ token, user });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auth/login', (req, res) => {
+  const { email, password } = req.body;
+  try {
+    const user = db.prepare('SELECT * FROM users WHERE email = ? AND password_hash = ?').get(email, password);
+    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+    
+    const token = uuidv4();
+    const expires = new Date();
+    expires.setDate(expires.getDate() + 30);
+    
+    db.prepare('INSERT INTO user_sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(token, user.id, expires.toISOString());
+    
+    const { password_hash, ...safeUser } = user;
+    res.json({ token, user: safeUser });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/auth/me', (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { password_hash, ...safeUser } = req.user;
+  res.json({ user: safeUser });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (token) {
+    try {
+      db.prepare('DELETE FROM user_sessions WHERE id = ?').run(token);
+    } catch {}
+  }
+  res.json({ success: true });
+});
+
+app.post('/api/auth/upgrade', (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { plan } = req.body;
+  if (!['free', 'pro', 'business'].includes(plan)) return res.status(400).json({ error: 'Invalid plan' });
+  try {
+    db.prepare('UPDATE users SET plan = ? WHERE id = ?').run(plan, req.user.id);
+    db.prepare('UPDATE subscriptions SET plan_id = ? WHERE user_id = ?').run(plan, req.user.id);
+    res.json({ success: true, plan });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 // ─── Gemini Client Setup ────────────────────────────────────────────────────
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+const GEMINI_ENABLED = process.env.TRUTHFORGE_ENABLE_GEMINI === '1';
 let geminiModel = null;
 
-if (GEMINI_API_KEY) {
+if (GEMINI_ENABLED && GEMINI_API_KEY) {
   try {
     const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
     geminiModel = genAI.getGenerativeModel({ model: GEMINI_MODEL });
@@ -78,6 +212,24 @@ app.post('/api/truthforge/debate', async (req, res) => {
   };
 
   console.log(`\n[DEBATE] Processing: "${question}"`);
+
+  // Usage Limit check
+  let plan = 'free';
+  if (req.user) plan = req.user.plan;
+  
+  try {
+    if (req.user) {
+      if (plan === 'free' && req.user.debate_count >= 5) {
+        return res.status(403).json({ success: false, error: 'usage_limit_exceeded', plan: 'free' });
+      } else if (plan === 'pro' && req.user.debate_count >= 100) {
+        return res.status(403).json({ success: false, error: 'usage_limit_exceeded', plan: 'pro' });
+      }
+      db.prepare('UPDATE users SET debate_count = debate_count + 1 WHERE id = ?').run(req.user.id);
+    }
+  } catch(e) {
+    console.error('Failed to update debate count', e);
+  }
+
 
   try {
     // ── 1. PLANNER ────────────────────────────────────────────────────

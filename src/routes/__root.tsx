@@ -11,22 +11,25 @@ import {
 import appCss from "../styles.css?url";
 import { Nav } from "@/components/Nav";
 import { Footer } from "@/components/Footer";
+import { AuthProvider, useAuth } from "@/hooks/useAuth";
+import { useEffect } from "react";
+
 
 function NotFoundComponent() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="max-w-md text-center">
-        <h1 className="text-7xl font-bold text-foreground">404</h1>
-        <h2 className="mt-4 text-xl font-semibold text-foreground">Page not found</h2>
-        <p className="mt-2 text-sm text-muted-foreground">
-          The page you're looking for doesn't exist or has been moved.
+        <h1 className="text-7xl font-bold text-gradient-forge">404</h1>
+        <h2 className="mt-4 text-3xl font-display font-semibold text-foreground">Truth not found.</h2>
+        <p className="mt-4 text-sm text-muted-foreground">
+          The page you're looking for doesn't exist or has been moved out of the reasoning graph.
         </p>
-        <div className="mt-6">
+        <div className="mt-8">
           <Link
             to="/"
-            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            className="inline-flex items-center justify-center rounded-xl bg-gradient-primary px-6 py-3 text-sm font-medium text-primary-foreground transition-all hover:scale-105 glow-primary"
           >
-            Go home
+            Return Home
           </Link>
         </div>
       </div>
@@ -121,14 +124,41 @@ function RootShell({ children }: { children: React.ReactNode }) {
   );
 }
 
+function AuthWrapper({ children }: { children: React.ReactNode }) {
+  const { user, isLoading } = useAuth();
+  const router = useRouter();
+  const pathname = router.state.location.pathname;
+
+  useEffect(() => {
+    if (!isLoading) {
+      const protectedRoutes = ['/dashboard', '/history', '/profile', '/memory'];
+      if (!user && protectedRoutes.some(route => pathname.startsWith(route))) {
+        router.navigate({ to: '/login', search: { redirect: pathname } });
+      } else if (user && (pathname === '/login' || pathname === '/signup' || pathname === '/forgot-password' || pathname === '/reset-password')) {
+        router.navigate({ to: '/dashboard' });
+      }
+    }
+  }, [user, isLoading, pathname, router]);
+
+  if (isLoading) {
+    return <div className="flex min-h-screen items-center justify-center text-forge">Loading session...</div>;
+  }
+
+  return <>{children}</>;
+}
+
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
   return (
     <QueryClientProvider client={queryClient}>
-      <Nav />
-      <Outlet />
-      <Footer />
+      <AuthProvider>
+        <AuthWrapper>
+          <Nav />
+          <Outlet />
+          <Footer />
+        </AuthWrapper>
+      </AuthProvider>
     </QueryClientProvider>
   );
 }

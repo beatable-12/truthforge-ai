@@ -170,3 +170,38 @@ CREATE INDEX IF NOT EXISTS idx_relationships_type ON relationships(relation_type
 CREATE INDEX IF NOT EXISTS idx_memory_timestamp ON memory_entries(timestamp);
 CREATE INDEX IF NOT EXISTS idx_search_cache_query ON search_cache(query);
 CREATE INDEX IF NOT EXISTS idx_search_cache_expires ON search_cache(expires_at);
+
+-- Users table
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    avatar TEXT,
+    plan TEXT DEFAULT 'free',
+    debate_count INTEGER DEFAULT 0,
+    saved_memories INTEGER DEFAULT 0,
+    history TEXT,  -- JSON array
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Subscriptions table
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    status TEXT DEFAULT 'active',
+    current_period_end TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    UNIQUE(user_id)
+);
+
+-- User sessions table
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);

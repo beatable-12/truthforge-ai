@@ -4,7 +4,10 @@ import { useMemo, useState, useEffect, useRef } from "react";
 import {
   Search, Sparkles, Check, Loader2, Brain, Network, FileSearch,
   Scale, Gavel, Layers, TrendingUp, Bookmark, Clock, ChevronRight, ArrowUpRight,
+  Users, Activity, BarChart3, Building
 } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 export const Route = createFileRoute("/dashboard")({
   component: Dashboard,
@@ -22,6 +25,10 @@ function Dashboard() {
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'workspace' | 'organization'>('workspace');
+  
+  const { user, token } = useAuth();
+  const isBusiness = user?.plan === 'business';
 
   async function handleAsk(e: React.FormEvent) {
     e.preventDefault();
@@ -32,13 +39,22 @@ function Dashboard() {
     setResult(null);
 
     try {
-      const response = await fetch('http://localhost:3000/api/truthforge/debate', {
+      const response = await fetch('/api/truthforge/debate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
         body: JSON.stringify({ question: query }),
       });
 
       if (!response.ok) {
+        if (response.status === 403) {
+          const data = await response.json();
+          if (data.error === 'usage_limit_exceeded') {
+            throw new Error(`Usage limit exceeded for ${data.plan} plan. Please upgrade.`);
+          }
+        }
         throw new Error(`API error: ${response.status}`);
       }
 
@@ -125,21 +141,43 @@ function Dashboard() {
   return (
     <main className="mx-auto max-w-7xl px-4 md:px-6 py-10">
       {/* Header */}
-      <div className="flex items-end justify-between mb-6">
+      <div className="flex flex-col md:flex-row md:items-end justify-between mb-6 gap-4">
         <div>
           <p className="text-xs font-mono uppercase tracking-widest text-forge">Workspace</p>
           <h1 className="mt-1 text-3xl md:text-4xl font-display font-semibold text-gradient">
             Forge a new debate
           </h1>
         </div>
-        <div className="hidden md:flex items-center gap-2 text-xs font-mono text-muted-foreground">
-          <span className={`w-1.5 h-1.5 rounded-full ${isLoading ? 'bg-primary animate-pulse' : 'bg-forge animate-pulse'}`} />
-          {isLoading ? 'debating...' : '7 agents online'}
+        <div className="flex items-center gap-4">
+          {isBusiness && (
+            <div className="flex bg-secondary/50 rounded-lg p-1">
+              <button
+                onClick={() => setActiveTab('workspace')}
+                className={`px-3 py-1.5 text-sm font-medium rounded-md transition ${activeTab === 'workspace' ? 'bg-background shadow text-foreground' : 'text-muted-foreground'}`}
+              >
+                Personal
+              </button>
+              <button
+                onClick={() => setActiveTab('organization')}
+                className={`flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-md transition ${activeTab === 'organization' ? 'bg-background shadow text-foreground' : 'text-muted-foreground'}`}
+              >
+                <Building className="w-4 h-4" /> Organization
+              </button>
+            </div>
+          )}
+          <div className="hidden md:flex items-center gap-2 text-xs font-mono text-muted-foreground">
+            <span className={`w-1.5 h-1.5 rounded-full ${isLoading ? 'bg-primary animate-pulse' : 'bg-forge animate-pulse'}`} />
+            {isLoading ? 'debating...' : '7 agents online'}
+          </div>
         </div>
       </div>
 
-      {/* Search */}
-      <form onSubmit={handleAsk} className="relative glass-strong border-gradient rounded-2xl p-1.5">
+      {activeTab === 'organization' && isBusiness ? (
+        <BusinessDashboard />
+      ) : (
+        <>
+          {/* Search */}
+          <form onSubmit={handleAsk} className="relative glass-strong border-gradient rounded-2xl p-1.5">
         <div className="flex items-center gap-3 px-4 py-2">
           <Search className="w-5 h-5 text-muted-foreground shrink-0" />
           <input
@@ -302,6 +340,8 @@ function Dashboard() {
           </SidebarCard>
         </aside>
       </div>
+      </>
+      )}
     </main>
   );
 }
@@ -388,5 +428,111 @@ function MiniGraph() {
         <circle key={i} cx={n.x} cy={n.y} r="2.4" fill={i === 5 ? "oklch(0.74 0.18 55)" : "oklch(0.7 0.2 240)"} />
       ))}
     </svg>
+  );
+}
+
+function BusinessDashboard() {
+  const chartData = [
+    { name: 'Mon', queries: 400, agents: 2400 },
+    { name: 'Tue', queries: 300, agents: 1398 },
+    { name: 'Wed', queries: 200, agents: 9800 },
+    { name: 'Thu', queries: 278, agents: 3908 },
+    { name: 'Fri', queries: 189, agents: 4800 },
+    { name: 'Sat', queries: 239, agents: 3800 },
+    { name: 'Sun', queries: 349, agents: 4300 },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-6 md:grid-cols-4">
+        {[
+          { label: "Total Debates", value: "2,491", inc: "+12%", icon: Scale },
+          { label: "Active Team Members", value: "8/10", inc: "+1", icon: Users },
+          { label: "Memory Nodes Forged", value: "14.2k", inc: "+8%", icon: Brain },
+          { label: "Avg Synthesis Time", value: "12.4s", inc: "-1.2s", icon: Clock },
+        ].map((stat, i) => (
+          <div key={i} className="glass rounded-2xl p-5">
+            <div className="flex justify-between items-start mb-2">
+              <stat.icon className="w-5 h-5 text-forge" />
+              <span className="text-xs font-mono text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">{stat.inc}</span>
+            </div>
+            <div className="text-3xl font-display font-semibold mt-4">{stat.value}</div>
+            <div className="text-xs text-muted-foreground mt-1">{stat.label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid gap-6 md:grid-cols-[1fr_320px]">
+        <div className="space-y-6">
+          <div className="glass rounded-2xl p-6 h-[340px] flex flex-col">
+            <h3 className="text-sm font-display font-semibold mb-4">Organization Usage Analytics</h3>
+            <div className="flex-1 min-h-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                  <XAxis dataKey="name" stroke="rgba(255,255,255,0.5)" fontSize={12} />
+                  <YAxis stroke="rgba(255,255,255,0.5)" fontSize={12} />
+                  <Tooltip contentStyle={{ backgroundColor: 'rgba(0,0,0,0.8)', borderColor: 'rgba(255,255,255,0.2)' }} />
+                  <Line type="monotone" dataKey="queries" stroke="oklch(0.7 0.2 240)" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="agents" stroke="oklch(0.74 0.18 55)" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="glass rounded-2xl p-6">
+            <h3 className="text-sm font-display font-semibold mb-4">Shared Team Debates</h3>
+            <div className="space-y-3">
+              {[
+                { q: "Is our Q4 marketing strategy viable?", user: "Sarah Jenkins", time: "10m ago" },
+                { q: "Should we migrate to AWS or GCP?", user: "David Chen", time: "2h ago" },
+                { q: "Evaluate acquisition of startup X", user: "Marcus West", time: "1d ago" },
+              ].map((d, i) => (
+                <div key={i} className="flex items-center justify-between p-3 rounded-xl bg-secondary/30 hover:bg-secondary/50 transition cursor-pointer">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-gradient-primary flex items-center justify-center text-xs font-bold">{d.user[0]}</div>
+                    <div>
+                      <div className="text-sm font-medium">{d.q}</div>
+                      <div className="text-xs text-muted-foreground">Forged by {d.user}</div>
+                    </div>
+                  </div>
+                  <div className="text-xs font-mono text-muted-foreground">{d.time}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <aside className="space-y-6">
+          <SidebarCard title="Org Memory Graph" icon={Network} link>
+            <div className="relative h-40 rounded-lg overflow-hidden grid-bg">
+              <MiniGraph />
+            </div>
+            <div className="mt-4 text-xs text-muted-foreground text-center">
+              Your team's federated reasoning graph contains over 14,000 synthesized nodes.
+            </div>
+            <button className="mt-4 w-full py-2 bg-secondary rounded-lg text-sm font-medium hover:bg-secondary/80 transition">
+              Explore Graph
+            </button>
+          </SidebarCard>
+
+          <SidebarCard title="Team Activity" icon={Activity}>
+            <div className="space-y-4 mt-2">
+              {[
+                "Sarah added a new claim to Q4 debate",
+                "David connected memory node #422",
+                "Marcus upgraded organization to Enterprise",
+                "Maya exported strategy report"
+              ].map((act, i) => (
+                <div key={i} className="flex items-start gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-forge mt-1.5 shrink-0" />
+                  <div className="text-sm text-foreground/80">{act}</div>
+                </div>
+              ))}
+            </div>
+          </SidebarCard>
+        </aside>
+      </div>
+    </div>
   );
 }

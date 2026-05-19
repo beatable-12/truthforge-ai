@@ -27,8 +27,8 @@ export function Footer() {
           <div>
             <h4 className="text-xs uppercase tracking-wider text-muted-foreground font-mono">Connect</h4>
             <div className="mt-4 flex gap-3">
-              <a className="text-muted-foreground hover:text-foreground" href="#"><Twitter className="w-4 h-4" /></a>
-              <a className="text-muted-foreground hover:text-foreground" href="#"><Github className="w-4 h-4" /></a>
+              <a className="text-muted-foreground hover:text-foreground" href="https://twitter.com" target="_blank" rel="noreferrer"><Twitter className="w-4 h-4" /></a>
+              <a className="text-muted-foreground hover:text-foreground" href="https://github.com" target="_blank" rel="noreferrer"><Github className="w-4 h-4" /></a>
             </div>
           </div>
         </div>

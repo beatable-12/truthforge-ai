@@ -1,7 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { motion } from "framer-motion";
 import { useState } from "react";
-import { Check, Sparkles, ArrowRight } from "lucide-react";
+import { Check, Sparkles, ArrowRight, Loader2 } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
 
 export const Route = createFileRoute("/pricing")({
   component: PricingPage,
@@ -44,6 +45,39 @@ const compare = [
 
 function PricingPage() {
   const [yearly, setYearly] = useState(true);
+  const [upgrading, setUpgrading] = useState<string | null>(null);
+  const { user, updateUser, token } = useAuth();
+  const router = useRouter();
+
+  const handleUpgrade = async (planName: string) => {
+    if (!user) {
+      router.navigate({ to: '/login', search: { redirect: '/pricing' } });
+      return;
+    }
+
+    const planId = planName.toLowerCase();
+    if (user.plan === planId) return;
+
+    setUpgrading(planId);
+    try {
+      const res = await fetch('/api/auth/upgrade', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ plan: planId })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        updateUser({ plan: planId as any });
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setUpgrading(null);
+    }
+  };
 
   return (
     <main className="mx-auto max-w-7xl px-4 md:px-6 py-16">
@@ -112,15 +146,25 @@ function PricingPage() {
             </ul>
 
             <button
+              onClick={() => handleUpgrade(p.name)}
+              disabled={upgrading === p.name.toLowerCase() || user?.plan === p.name.toLowerCase()}
               className={`mt-7 w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm transition ${
                 p.featured
                   ? "bg-gradient-primary text-primary-foreground hover:opacity-90"
                   : "glass-strong hover:bg-accent"
-              }`}
+              } disabled:opacity-50`}
             >
-              {p.featured && <Sparkles className="w-3.5 h-3.5" />}
-              {p.cta}
-              <ArrowRight className="w-3.5 h-3.5" />
+              {upgrading === p.name.toLowerCase() ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : user?.plan === p.name.toLowerCase() ? (
+                <>Current Plan</>
+              ) : (
+                <>
+                  {p.featured && <Sparkles className="w-3.5 h-3.5" />}
+                  {p.cta}
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </>
+              )}
             </button>
           </motion.div>
         ))}

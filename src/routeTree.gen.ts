@@ -14,6 +14,12 @@ import { Route as HistoryRouteImport } from './routes/history'
 import { Route as GraphRouteImport } from './routes/graph'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as SignupRouteImport } from './routes/signup'
+import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
+import { Route as ResetPasswordRouteImport } from './routes/reset-password'
+import { Route as ProfileRouteImport } from './routes/profile'
+import { Route as MemoryRouteImport } from './routes/memory'
 
 const PricingRoute = PricingRouteImport.update({
   id: '/pricing',
@@ -35,6 +41,36 @@ const DashboardRoute = DashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SignupRoute = SignupRouteImport.update({
+  id: '/signup',
+  path: '/signup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ForgotPasswordRoute = ForgotPasswordRouteImport.update({
+  id: '/forgot-password',
+  path: '/forgot-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ResetPasswordRoute = ResetPasswordRouteImport.update({
+  id: '/reset-password',
+  path: '/reset-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProfileRoute = ProfileRouteImport.update({
+  id: '/profile',
+  path: '/profile',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MemoryRoute = MemoryRouteImport.update({
+  id: '/memory',
+  path: '/memory',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -47,6 +83,12 @@ export interface FileRoutesByFullPath {
   '/graph': typeof GraphRoute
   '/history': typeof HistoryRoute
   '/pricing': typeof PricingRoute
+  '/login': typeof LoginRoute
+  '/signup': typeof SignupRoute
+  '/forgot-password': typeof ForgotPasswordRoute
+  '/reset-password': typeof ResetPasswordRoute
+  '/profile': typeof ProfileRoute
+  '/memory': typeof MemoryRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -54,6 +96,12 @@ export interface FileRoutesByTo {
   '/graph': typeof GraphRoute
   '/history': typeof HistoryRoute
   '/pricing': typeof PricingRoute
+  '/login': typeof LoginRoute
+  '/signup': typeof SignupRoute
+  '/forgot-password': typeof ForgotPasswordRoute
+  '/reset-password': typeof ResetPasswordRoute
+  '/profile': typeof ProfileRoute
+  '/memory': typeof MemoryRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -62,13 +110,19 @@ export interface FileRoutesById {
   '/graph': typeof GraphRoute
   '/history': typeof HistoryRoute
   '/pricing': typeof PricingRoute
+  '/login': typeof LoginRoute
+  '/signup': typeof SignupRoute
+  '/forgot-password': typeof ForgotPasswordRoute
+  '/reset-password': typeof ResetPasswordRoute
+  '/profile': typeof ProfileRoute
+  '/memory': typeof MemoryRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/dashboard' | '/graph' | '/history' | '/pricing'
+  fullPaths: '/' | '/dashboard' | '/graph' | '/history' | '/pricing' | '/login' | '/signup' | '/forgot-password' | '/reset-password' | '/profile' | '/memory'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/dashboard' | '/graph' | '/history' | '/pricing'
-  id: '__root__' | '/' | '/dashboard' | '/graph' | '/history' | '/pricing'
+  to: '/' | '/dashboard' | '/graph' | '/history' | '/pricing' | '/login' | '/signup' | '/forgot-password' | '/reset-password' | '/profile' | '/memory'
+  id: '__root__' | '/' | '/dashboard' | '/graph' | '/history' | '/pricing' | '/login' | '/signup' | '/forgot-password' | '/reset-password' | '/profile' | '/memory'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -77,6 +131,12 @@ export interface RootRouteChildren {
   GraphRoute: typeof GraphRoute
   HistoryRoute: typeof HistoryRoute
   PricingRoute: typeof PricingRoute
+  LoginRoute: typeof LoginRoute
+  SignupRoute: typeof SignupRoute
+  ForgotPasswordRoute: typeof ForgotPasswordRoute
+  ResetPasswordRoute: typeof ResetPasswordRoute
+  ProfileRoute: typeof ProfileRoute
+  MemoryRoute: typeof MemoryRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -109,6 +169,48 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/signup': {
+      id: '/signup'
+      path: '/signup'
+      fullPath: '/signup'
+      preLoaderRoute: typeof SignupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/forgot-password': {
+      id: '/forgot-password'
+      path: '/forgot-password'
+      fullPath: '/forgot-password'
+      preLoaderRoute: typeof ForgotPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reset-password': {
+      id: '/reset-password'
+      path: '/reset-password'
+      fullPath: '/reset-password'
+      preLoaderRoute: typeof ResetPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/profile': {
+      id: '/profile'
+      path: '/profile'
+      fullPath: '/profile'
+      preLoaderRoute: typeof ProfileRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/memory': {
+      id: '/memory'
+      path: '/memory'
+      fullPath: '/memory'
+      preLoaderRoute: typeof MemoryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -125,6 +227,12 @@ const rootRouteChildren: RootRouteChildren = {
   GraphRoute: GraphRoute,
   HistoryRoute: HistoryRoute,
   PricingRoute: PricingRoute,
+  LoginRoute: LoginRoute,
+  SignupRoute: SignupRoute,
+  ForgotPasswordRoute: ForgotPasswordRoute,
+  ResetPasswordRoute: ResetPasswordRoute,
+  ProfileRoute: ProfileRoute,
+  MemoryRoute: MemoryRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
