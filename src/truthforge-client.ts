@@ -45,7 +45,7 @@ export interface ErrorResponse {
 }
 
 const API_BASE_URL = 'http://localhost:3000/api/truthforge';
-const REQUEST_TIMEOUT_MS = 15000;
+const REQUEST_TIMEOUT_MS = 120000; // 2 min — real pipeline makes 6 sequential Gemini calls
 
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
   const controller = new AbortController();

@@ -1,520 +1,649 @@
 /**
  * TruthForge AI - API Endpoint
- * TypeScript endpoint that exposes the Jac backend reasoning engine
- * Integrates with server.ts for the TruthForge API
+ * Full 8-agent pipeline: Planner → Memory → Thesis → Antithesis → Evidence → Referee → Synthesis → MemoryUpdate
+ * Each agent performs real Gemini-powered reasoning — no placeholders.
  */
 
 import 'dotenv/config';
 import { Request, Response } from 'express';
 import TruthForgeStore from './truthforge_store.ts';
 import GeminiClient from './gemini-client.ts';
-import ResponseParser from './response-parser.ts';
+import type {
+  PlannerResult,
+  ThesisClaim,
+  CounterClaim,
+  EvidenceResult,
+  EvidenceItem,
+  RefereeResult,
+  SynthesisResult,
+} from './gemini-client.ts';
 import { v4 as uuidv4 } from 'uuid';
 
+// ─── Interfaces ─────────────────────────────────────────────────────────────
+
 interface DebateRequest {
-    question: string;
-    domain?: string;
-    depth?: number;
+  question: string;
+  domain?: string;
+  depth?: number;
+}
+
+interface AgentEvent {
+  agent: string;
+  status: 'started' | 'complete' | 'error';
+  detail: string;
+  timestamp: string;
+  duration_ms?: number;
 }
 
 interface DebateResponse {
-    success: boolean;
-    debate_id: string;
-    session_id: string;
-    question: string;
-    complexity: string;
-    analysis: string;
-    supporting_signals: string[];
-    counterarguments: string[];
-    confidence: string;
-    final_answer: string;
-    reasoning_chain: string[];
-    verdict: {
-        evaluation: string;
-        logic_quality_score: number;
-        evidence_strength_score: number;
-        assumption_validity: number;
-        overall_confidence: number;
-    };
-    timestamp: string;
+  success: boolean;
+  debate_id: string;
+  session_id: string;
+  question: string;
+  question_type: string;
+  complexity: string;
+  analysis: string;
+  perspective_exploration: string;
+  supporting_factors: string[];
+  counterarguments: string[];
+  historical_context: string;
+  confidence_assessment: string;
+  confidence: string;
+  final_answer: string;
+  reasoning_chain: string[];
+  verdict: {
+    evaluation: string;
+    logic_strength: number;
+    evidence_strength: number;
+    assumption_risk: number;
+    agreement_level: number;
+    overall_confidence: number;
+  };
+  agent_events: AgentEvent[];
+  thesis_claims: Array<{ statement: string; reasoning: string; strength: number }>;
+  counter_claims: Array<{ statement: string; reasoning: string; strength: number }>;
+  evidence: {
+    source_count: number;
+    source_titles: string[];
+    evidence: Array<{ content: string; source_title: string; supports: string; credibility: number }>;
+  };
+  timestamp: string;
 }
 
+// ─── API Class ──────────────────────────────────────────────────────────────
+
 export class TruthForgeAPI {
-    private _withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-        return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                reject(new Error(`Gemini pipeline timed out after ${ms}ms`));
-            }, ms);
+  private store: TruthForgeStore;
+  private gemini: GeminiClient | null;
+  private dbPath: string;
+  private geminiApiKey: string;
+  private geminiModel: string;
+  private logLevel: string;
 
-            promise
-                .then((value) => {
-                    clearTimeout(timer);
-                    resolve(value);
-                })
-                .catch((err) => {
-                    clearTimeout(timer);
-                    reject(err);
-                });
+  constructor(dbPath: string = process.env.TRUTHFORGE_DB_PATH || './truthforge.db') {
+    this.dbPath = dbPath;
+    this.geminiApiKey = process.env.GEMINI_API_KEY || '';
+    this.geminiModel = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+    this.logLevel = process.env.LOG_LEVEL || 'info';
+    this.store = new TruthForgeStore(dbPath);
+
+    // Gemini is optional; enable explicitly with TRUTHFORGE_ENABLE_GEMINI=1
+    const enableGemini =
+      process.env.TRUTHFORGE_ENABLE_GEMINI === '1' ||
+      process.env.TRUTHFORGE_ENABLE_GEMINI === 'true';
+
+    if (!enableGemini) {
+      console.warn(
+        '[TRUTHFORGE] Gemini disabled (set TRUTHFORGE_ENABLE_GEMINI=1 to enable)'
+      );
+      this.gemini = null;
+    } else if (this.geminiApiKey && this.geminiApiKey.trim().length > 0) {
+      try {
+        this.gemini = new GeminiClient(this.geminiApiKey, this.geminiModel);
+        console.log('[TRUTHFORGE] Gemini client initialized successfully');
+      } catch (error) {
+        console.error('[TRUTHFORGE] Failed to initialize Gemini client:', error);
+        this.gemini = null;
+      }
+    } else {
+      console.warn('[TRUTHFORGE] GEMINI_API_KEY not set');
+      this.gemini = null;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Timeout helper
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private _withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`Pipeline timed out after ${ms}ms`));
+      }, ms);
+
+      promise
+        .then((value) => {
+          clearTimeout(timer);
+          resolve(value);
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          reject(err);
         });
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Main endpoint
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async processQuestion(req: Request, res: Response): Promise<void> {
+    try {
+      const { question, domain, depth } = req.body as DebateRequest;
+
+      if (!question || question.trim().length === 0) {
+        res.status(400).json({ success: false, error: 'Question is required' });
+        return;
+      }
+
+      console.log(`\n[TRUTHFORGE] ════════════════════════════════════════`);
+      console.log(`[TRUTHFORGE] Processing: ${question}`);
+      console.log(`[TRUTHFORGE] ════════════════════════════════════════`);
+
+      const session_id = `session_${uuidv4()}`;
+      const question_id = `question_${uuidv4()}`;
+
+      if (!this.gemini) {
+        throw new Error('Gemini not configured — set TRUTHFORGE_ENABLE_GEMINI=1 and GEMINI_API_KEY');
+      }
+
+      // Run the full pipeline with a generous timeout
+      const timeoutMs = parseInt(process.env.GEMINI_PIPELINE_TIMEOUT_MS || '90000', 10);
+      const debateResult = await this._withTimeout(
+        this._runAgentPipeline(question, session_id, question_id, domain || 'auto'),
+        timeoutMs
+      );
+
+      // Persist to database in the background
+      this._persistResults(session_id, question_id, question, debateResult);
+
+      // Build response
+      const response: DebateResponse = {
+        success: true,
+        debate_id: `debate_${session_id}`,
+        session_id,
+        question,
+        question_type: debateResult.plannerResult.question_type,
+        complexity: debateResult.plannerResult.complexity > 0.6 ? 'complex' : debateResult.plannerResult.complexity > 0.3 ? 'moderate' : 'simple',
+        analysis: debateResult.synthesisResult.analysis,
+        perspective_exploration: debateResult.synthesisResult.perspective_exploration,
+        supporting_factors: debateResult.synthesisResult.supporting_factors,
+        counterarguments: debateResult.synthesisResult.counterarguments,
+        historical_context: debateResult.synthesisResult.historical_context,
+        confidence_assessment: debateResult.synthesisResult.confidence_assessment,
+        confidence: debateResult.synthesisResult.confidence,
+        final_answer: debateResult.synthesisResult.final_answer,
+        reasoning_chain: debateResult.synthesisResult.reasoning_chain,
+        verdict: {
+          evaluation: debateResult.refereeResult.reasoning,
+          logic_strength: debateResult.refereeResult.logic_strength,
+          evidence_strength: debateResult.refereeResult.evidence_strength,
+          assumption_risk: debateResult.refereeResult.assumption_risk,
+          agreement_level: debateResult.refereeResult.agreement_level,
+          overall_confidence:
+            (debateResult.refereeResult.logic_strength + debateResult.refereeResult.evidence_strength) / 2 *
+            (1 - debateResult.refereeResult.assumption_risk * 0.3),
+        },
+        agent_events: debateResult.agentEvents,
+        thesis_claims: debateResult.thesisClaims.map((c) => ({
+          statement: c.statement,
+          reasoning: c.reasoning,
+          strength: c.strength,
+        })),
+        counter_claims: debateResult.counterClaims.map((c) => ({
+          statement: c.statement,
+          reasoning: c.reasoning,
+          strength: c.strength,
+        })),
+        evidence: {
+          source_count: debateResult.evidenceResult.source_count,
+          source_titles: debateResult.evidenceResult.source_titles,
+          evidence: debateResult.evidenceResult.evidence.map((e) => ({
+            content: e.content,
+            source_title: e.source_title,
+            supports: e.supports,
+            credibility: e.credibility,
+          })),
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      console.log(`[TRUTHFORGE] ✓ Pipeline complete: ${session_id}`);
+      res.json(response);
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.error('[TRUTHFORGE] Pipeline error:', errMsg);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to process question',
+        details: errMsg,
+      });
     }
-    private store: TruthForgeStore;
-    private gemini: GeminiClient | null;
-    private dbPath: string;
-    private geminiApiKey: string;
-    private geminiModel: string;
-    private logLevel: string;
+  }
 
-    constructor(dbPath: string = process.env.TRUTHFORGE_DB_PATH || './truthforge.db') {
-        this.dbPath = dbPath;
-        this.geminiApiKey = process.env.GEMINI_API_KEY || '';
-        this.geminiModel = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
-        this.logLevel = process.env.LOG_LEVEL || 'info';
-        this.store = new TruthForgeStore(dbPath);
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Full 8-Agent Pipeline
+  // ═══════════════════════════════════════════════════════════════════════════
 
-        // Gemini is optional; it is OFF by default to avoid "stuck" requests when the
-        // Gemini SDK/network hangs. Enable explicitly with TRUTHFORGE_ENABLE_GEMINI=1.
-        const enableGemini =
-            process.env.TRUTHFORGE_ENABLE_GEMINI === '1' ||
-            process.env.TRUTHFORGE_ENABLE_GEMINI === 'true';
+  private async _runAgentPipeline(
+    question: string,
+    session_id: string,
+    question_id: string,
+    domain: string
+  ) {
+    if (!this.gemini) throw new Error('Gemini client not available');
 
-        if (!enableGemini) {
-            console.warn('[TRUTHFORGE] Gemini disabled (set TRUTHFORGE_ENABLE_GEMINI=1 to enable); using mock reasoning fallback');
-            this.gemini = null;
-        } else if (this.geminiApiKey && this.geminiApiKey.trim().length > 0) {
-            try {
-                this.gemini = new GeminiClient(this.geminiApiKey, this.geminiModel);
-                console.log('[TRUTHFORGE] Gemini client initialized successfully');
-            } catch (error) {
-                console.error('[TRUTHFORGE] Failed to initialize Gemini client, falling back to mock:', error);
-                this.gemini = null;
-            }
-        } else {
-            console.warn('[TRUTHFORGE] GEMINI_API_KEY not set; using mock reasoning fallback');
-            this.gemini = null;
+    const agentEvents: AgentEvent[] = [];
+    const emitEvent = (agent: string, status: AgentEvent['status'], detail: string, durationMs?: number) => {
+      const event: AgentEvent = {
+        agent,
+        status,
+        detail,
+        timestamp: new Date().toISOString(),
+        duration_ms: durationMs,
+      };
+      agentEvents.push(event);
+      console.log(`[TRUTHFORGE] [${status.toUpperCase()}] ${agent}: ${detail}`);
+    };
+
+    // ── Step 1: PLANNER ──────────────────────────────────────────────────
+    emitEvent('planner', 'started', 'Classifying question type and activating agents');
+    const plannerStart = Date.now();
+
+    let plannerResult: PlannerResult;
+    try {
+      plannerResult = await this.gemini.classifyQuestion(question);
+    } catch (err) {
+      plannerResult = {
+        question_type: 'factual',
+        domain: domain !== 'auto' ? domain : 'general',
+        complexity: 0.5,
+        reasoning: 'Planner fallback: classification failed',
+        agents_to_activate: ['memory', 'thesis', 'antithesis', 'evidence', 'referee', 'synthesis', 'memory_update'],
+      };
+    }
+
+    emitEvent(
+      'planner',
+      'complete',
+      `Question type: ${plannerResult.question_type} | Domain: ${plannerResult.domain} | Complexity: ${plannerResult.complexity.toFixed(2)}`,
+      Date.now() - plannerStart
+    );
+
+    // ── Step 2: MEMORY ───────────────────────────────────────────────────
+    emitEvent('memory', 'started', 'Retrieving prior reasoning from database');
+    const memoryStart = Date.now();
+
+    let memoryContext = '';
+    let memoryCount = 0;
+    try {
+      const memories = this.store.searchMemoryByQuestion(question);
+      memoryCount = memories.length;
+      if (memories.length > 0) {
+        memoryContext = memories
+          .slice(0, 3)
+          .map((m: any) => `Prior analysis: ${m.summary || m.question}`)
+          .join('\n');
+      }
+    } catch (err) {
+      // Memory is optional — proceed without it
+    }
+
+    emitEvent('memory', 'complete', `Retrieved: ${memoryCount} prior analyses`, Date.now() - memoryStart);
+
+    // ── Step 3: THESIS ───────────────────────────────────────────────────
+    emitEvent('thesis', 'started', 'Generating supporting claims via Gemini');
+    const thesisStart = Date.now();
+
+    let thesisClaims: ThesisClaim[];
+    try {
+      thesisClaims = await this.gemini.generateThesisClaims(
+        question,
+        plannerResult.question_type,
+        plannerResult.domain,
+        memoryContext
+      );
+    } catch (err) {
+      thesisClaims = [
+        {
+          statement: `Analysis of "${question}" requires further evidence gathering`,
+          reasoning: 'Thesis generation encountered an error',
+          strength: 0.5,
+        },
+      ];
+      emitEvent('thesis', 'error', `Thesis generation failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    emitEvent(
+      'thesis',
+      'complete',
+      `Claims generated: ${thesisClaims.length}`,
+      Date.now() - thesisStart
+    );
+
+    // ── Step 4: ANTITHESIS ───────────────────────────────────────────────
+    emitEvent('antithesis', 'started', 'Generating counter-arguments via Gemini');
+    const antithesisStart = Date.now();
+
+    let counterClaims: CounterClaim[];
+    try {
+      counterClaims = await this.gemini.generateCounterClaims(question, thesisClaims);
+    } catch (err) {
+      counterClaims = [
+        {
+          targets_claim_index: 0,
+          statement: 'Counter-argument generation requires retry',
+          attack_type: 'logical',
+          reasoning: 'Antithesis generation encountered an error',
+          strength: 0.5,
+        },
+      ];
+      emitEvent('antithesis', 'error', `Antithesis generation failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    emitEvent(
+      'antithesis',
+      'complete',
+      `Counterclaims generated: ${counterClaims.length}`,
+      Date.now() - antithesisStart
+    );
+
+    // ── Step 5: EVIDENCE ─────────────────────────────────────────────────
+    emitEvent('evidence', 'started', 'Gathering structured evidence via Gemini');
+    const evidenceStart = Date.now();
+
+    let evidenceResult: EvidenceResult;
+    try {
+      evidenceResult = await this.gemini.generateEvidenceAnalysis(
+        question,
+        thesisClaims.map((c) => c.statement),
+        counterClaims.map((c) => c.statement)
+      );
+    } catch (err) {
+      evidenceResult = { source_count: 0, source_titles: [], evidence: [] };
+      emitEvent('evidence', 'error', `Evidence gathering failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    emitEvent(
+      'evidence',
+      'complete',
+      `Evidence retrieved: ${evidenceResult.source_count} sources`,
+      Date.now() - evidenceStart
+    );
+
+    // ── Step 6: REFEREE ──────────────────────────────────────────────────
+    emitEvent('referee', 'started', 'Evaluating debate quality');
+    const refereeStart = Date.now();
+
+    let refereeResult: RefereeResult;
+    try {
+      refereeResult = await this.gemini.evaluateDebate(
+        question,
+        thesisClaims.map((c) => ({ statement: c.statement, strength: c.strength })),
+        counterClaims.map((c) => ({ statement: c.statement, strength: c.strength })),
+        evidenceResult.evidence.map((e) => ({
+          content: e.content,
+          supports: e.supports,
+          credibility: e.credibility,
+        }))
+      );
+    } catch (err) {
+      refereeResult = {
+        logic_strength: 0.6,
+        evidence_strength: 0.5,
+        assumption_risk: 0.5,
+        agreement_level: 0.4,
+        stronger_position: 'balanced',
+        key_findings: ['Referee evaluation encountered an error'],
+        reasoning: 'Fallback scores due to evaluation error',
+      };
+      emitEvent('referee', 'error', `Referee evaluation failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    emitEvent(
+      'referee',
+      'complete',
+      `Logic: ${refereeResult.logic_strength.toFixed(2)} | Evidence: ${refereeResult.evidence_strength.toFixed(2)} | Risk: ${refereeResult.assumption_risk.toFixed(2)}`,
+      Date.now() - refereeStart
+    );
+
+    // ── Step 7: SYNTHESIS ────────────────────────────────────────────────
+    emitEvent('synthesis', 'started', 'Generating final analysis');
+    const synthesisStart = Date.now();
+
+    let synthesisResult: SynthesisResult;
+    try {
+      synthesisResult = await this.gemini.generateFinalSynthesis({
+        question,
+        questionType: plannerResult.question_type,
+        claims: thesisClaims.map((c) => ({ statement: c.statement })),
+        counterClaims: counterClaims.map((c) => ({ statement: c.statement })),
+        evidence: evidenceResult.evidence.map((e) => ({
+          content: e.content,
+          source_title: e.source_title,
+          supports: e.supports,
+        })),
+        scores: {
+          logic_strength: refereeResult.logic_strength,
+          evidence_strength: refereeResult.evidence_strength,
+          assumption_risk: refereeResult.assumption_risk,
+          agreement_level: refereeResult.agreement_level,
+          stronger_position: refereeResult.stronger_position,
+        },
+      });
+    } catch (err) {
+      synthesisResult = {
+        analysis: `Analysis of "${question}" encountered a synthesis error.`,
+        perspective_exploration: '',
+        supporting_factors: thesisClaims.map((c) => c.statement),
+        counterarguments: counterClaims.map((c) => c.statement),
+        historical_context: '',
+        confidence_assessment: 'Unable to fully assess confidence due to synthesis error.',
+        final_answer: 'The analysis could not be fully synthesized. Please retry.',
+        confidence: 'Low',
+        reasoning_chain: ['Synthesis encountered an error'],
+      };
+      emitEvent('synthesis', 'error', `Synthesis failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    emitEvent(
+      'synthesis',
+      'complete',
+      `Confidence: ${synthesisResult.confidence} | Answer length: ${synthesisResult.final_answer.length} chars`,
+      Date.now() - synthesisStart
+    );
+
+    // ── Step 8: MEMORY_UPDATE ────────────────────────────────────────────
+    emitEvent('memory_update', 'started', 'Persisting results to database');
+    emitEvent('memory_update', 'complete', 'Results queued for persistence');
+
+    return {
+      plannerResult,
+      memoryCount,
+      thesisClaims,
+      counterClaims,
+      evidenceResult,
+      refereeResult,
+      synthesisResult,
+      agentEvents,
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Database persistence (runs after response is sent)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private _persistResults(
+    session_id: string,
+    question_id: string,
+    question: string,
+    result: Awaited<ReturnType<typeof this._runAgentPipeline>>
+  ): void {
+    setImmediate(() => {
+      try {
+        // Store claims
+        for (const claim of result.thesisClaims) {
+          try {
+            this.store.createClaim({
+              id: `${session_id}_claim_${uuidv4()}`,
+              debate_id: session_id,
+              statement: claim.statement,
+              strength: claim.strength,
+              reasoning: claim.reasoning,
+              key_points: JSON.stringify([]),
+              assumptions: JSON.stringify([]),
+              supporting_count: 0,
+            });
+          } catch (e) { /* best effort */ }
         }
-    }
 
-    /**
-     * Main endpoint to process a question through TruthForge
-     * Uses actual Gemini API calls for reasoning
-     */
-    async processQuestion(req: Request, res: Response): Promise<void> {
+        // Store counter-claims
+        for (const counter of result.counterClaims) {
+          try {
+            this.store.createClaim({
+              id: `${session_id}_counter_${uuidv4()}`,
+              debate_id: session_id,
+              statement: counter.statement,
+              strength: counter.strength,
+              reasoning: counter.reasoning,
+              key_points: JSON.stringify([]),
+              assumptions: JSON.stringify([]),
+              supporting_count: 0,
+            });
+          } catch (e) { /* best effort */ }
+        }
+
+        // Store evidence
+        for (const ev of result.evidenceResult.evidence) {
+          try {
+            this.store.createEvidence({
+              id: `${session_id}_evidence_${uuidv4()}`,
+              debate_id: session_id,
+              content: ev.content,
+              source: ev.source_title,
+              credibility_score: ev.credibility,
+              evidence_type: ev.source_type,
+              date_published: new Date().toISOString(),
+              retrieval_method: 'gemini_analysis',
+            });
+          } catch (e) { /* best effort */ }
+        }
+
+        // Store verdict
         try {
-            const { question, domain, depth } = req.body as DebateRequest;
+          this.store.createVerdict({
+            id: `${session_id}_verdict`,
+            debate_id: session_id,
+            evaluation: result.refereeResult.reasoning,
+            logic_quality_score: result.refereeResult.logic_strength,
+            evidence_strength_score: result.refereeResult.evidence_strength,
+            assumption_validity: 1 - result.refereeResult.assumption_risk,
+            overall_confidence:
+              (result.refereeResult.logic_strength + result.refereeResult.evidence_strength) / 2,
+            key_findings: JSON.stringify(result.refereeResult.key_findings),
+            reasoning_quality: result.refereeResult.stronger_position,
+          });
+        } catch (e) { /* best effort */ }
 
-            if (!question || question.trim().length === 0) {
-                res.status(400).json({
-                    success: false,
-                    error: 'Question is required'
-                });
-                return;
-            }
-
-            console.log(`[TRUTHFORGE] Processing question: ${question}`);
-            const reqStart = Date.now();
-
-            // Create session
-            const session_id = `session_${uuidv4()}`;
-            const question_id = `question_${uuidv4()}`;
-
-            // Move question/debate creation to background to avoid blocking
-            // STUB: Skip for now - database operations are blocking too long
-            console.log('[TRUTHFORGE] Skipping early DB writes (performance optimization)...');
-
-            console.log(`[TRUTHFORGE] Session created: ${session_id}`);
-
-            // Generate debate result using Gemini
-            let debateResult;
-            try {
-                const timeoutMs = parseInt(process.env.GEMINI_TIMEOUT_MS || '8000', 10);
-                if (this.logLevel === 'debug') {
-                    console.log(`[TRUTHFORGE][debug] Gemini enabled: ${Boolean(this.gemini)}; timeoutMs=${timeoutMs}`);
-                }
-
-                if (!this.gemini) {
-                    throw new Error('Gemini disabled or not configured');
-                }
-
-                console.log('[TRUTHFORGE] Creating Gemini promise...');
-                const geminiPromise = this._generateGeminiDebateResult(
-                    question,
-                    session_id,
-                    question_id,
-                    domain || 'general'
-                );
-
-                if (this.logLevel === 'debug') {
-                    console.log('[TRUTHFORGE][debug] Gemini promise created');
-                }
-
-                console.log('[TRUTHFORGE] Waiting for Gemini with timeout...');
-                debateResult = await this._withTimeout(geminiPromise, timeoutMs);
-
-                if (this.logLevel === 'debug') {
-                    console.log('[TRUTHFORGE][debug] Gemini promise resolved');
-                }
-            } catch (error) {
-                console.error('[TRUTHFORGE] Gemini generation failed, using mock result:', (error instanceof Error) ? error.message : String(error));
-                console.log('[TRUTHFORGE] Generating mock result...');
-                // Fallback to mock if Gemini fails
-                debateResult = this._generateMockDebateResult(
-                    question,
-                    session_id,
-                    question_id,
-                    domain || 'general'
-                );
-            }
-
-            // Batch database writes and yield to event loop to prevent blocking
-            // DISABLED: DatabaseSync is causing contention on second+ requests
-            // TODO: Migrate to async SQLite or use a worker pool
-            console.log('[TRUTHFORGE] Deferring database writes (async will complete later)...');
-            setImmediate(() => {
-                console.log('[TRUTHFORGE] Background database writes queued (not executed - see TODO)');
-            });
-
-            // Build response immediately (don't wait for DB writes)
-            console.log('[TRUTHFORGE] Building response...');
-            const response: DebateResponse = {
-                success: true,
-                debate_id: `debate_${session_id}`,
-                session_id: session_id,
-                question: question,
-                complexity: debateResult.complexity,
-                analysis: debateResult.synthesis.analysis,
-                supporting_signals: debateResult.synthesis.supporting_signals,
-                counterarguments: debateResult.synthesis.counterarguments,
-                confidence: debateResult.synthesis.confidence,
-                final_answer: debateResult.synthesis.final_answer,
-                reasoning_chain: debateResult.synthesis.reasoning_chain,
-                verdict: debateResult.verdict,
-                timestamp: new Date().toISOString()
-            };
-
-            console.log(`[TRUTHFORGE] Session completed: ${session_id}`);
-            res.json(response);
-        } catch (error) {
-            console.error('Error processing question:', error instanceof Error ? error.message : String(error));
-            res.status(500).json({
-                success: false,
-                error: 'Failed to process question',
-                details: error instanceof Error ? error.message : 'Unknown error'
-            });
-        }
-    }
-
-    /**
-     * Endpoint to retrieve prior debates
-     */
-    async getMemory(req: Request, res: Response): Promise<void> {
+        // Store synthesis
         try {
-            const { question } = req.body;
+          this.store.createReasoning({
+            id: `${session_id}_reasoning`,
+            debate_id: session_id,
+            analysis: result.synthesisResult.analysis,
+            supporting_signals: JSON.stringify(result.synthesisResult.supporting_factors),
+            counterarguments: JSON.stringify(result.synthesisResult.counterarguments),
+            confidence: result.synthesisResult.confidence,
+            final_answer: result.synthesisResult.final_answer,
+            reasoning_chain: JSON.stringify(result.synthesisResult.reasoning_chain),
+          });
+        } catch (e) { /* best effort */ }
 
-            if (!question) {
-                res.status(400).json({
-                    success: false,
-                    error: 'Question is required'
-                });
-                return;
-            }
-
-            const memories = this.store.searchMemoryByQuestion(question);
-
-            res.json({
-                success: true,
-                count: memories.length,
-                memories: memories
-            });
-        } catch (error) {
-            console.error('Error retrieving memory:', error);
-            res.status(500).json({
-                success: false,
-                error: 'Failed to retrieve memory'
-            });
-        }
-    }
-
-    /**
-     * Endpoint to get debate details
-     */
-    async getDebate(req: Request, res: Response): Promise<void> {
+        // Store memory entry for future retrieval
         try {
-            const session_id = (req.params as any).session_id ?? (req.params as any).debateId;
+          this.store.createMemoryEntry({
+            id: `${session_id}_memory`,
+            question,
+            summary: result.synthesisResult.final_answer.substring(0, 500),
+            claims: JSON.stringify(result.thesisClaims.map((c) => c.statement)),
+            counter_claims: JSON.stringify(result.counterClaims.map((c) => c.statement)),
+            verdict: result.refereeResult.reasoning,
+            confidence:
+              (result.refereeResult.logic_strength + result.refereeResult.evidence_strength) / 2,
+            timestamp: new Date().toISOString(),
+            relevance_score: 1.0,
+          });
+        } catch (e) { /* best effort */ }
 
-            const debate = this.store.getDebate(String(session_id));
-            if (!debate) {
-                res.status(404).json({
-                    success: false,
-                    error: 'Debate not found'
-                });
-                return;
-            }
+        console.log(`[TRUTHFORGE] ✓ Results persisted for ${session_id}`);
+      } catch (error) {
+        console.error('[TRUTHFORGE] Persistence error:', error);
+      }
+    });
+  }
 
-            const verdict = this.store.getVerdictByDebate(String(session_id));
-            const reasoning = this.store.getReasoningByDebate(String(session_id));
-            const claims = this.store.getClaimsByDebate(String(session_id));
-            const evidence = this.store.getEvidenceByDebate(String(session_id));
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Other endpoints (unchanged)
+  // ═══════════════════════════════════════════════════════════════════════════
 
-            res.json({
-                success: true,
-                debate,
-                verdict,
-                reasoning,
-                claims,
-                evidence
-            });
-        } catch (error) {
-            console.error('Error retrieving debate:', error);
-            res.status(500).json({
-                success: false,
-                error: 'Failed to retrieve debate'
-            });
-        }
+  async getMemory(req: Request, res: Response): Promise<void> {
+    try {
+      const { question } = req.body;
+
+      if (!question) {
+        res.status(400).json({ success: false, error: 'Question is required' });
+        return;
+      }
+
+      const memories = this.store.searchMemoryByQuestion(question);
+
+      res.json({
+        success: true,
+        count: memories.length,
+        memories,
+      });
+    } catch (error) {
+      console.error('Error retrieving memory:', error);
+      res.status(500).json({ success: false, error: 'Failed to retrieve memory' });
     }
+  }
 
-    /**
-     * Generate debate result using actual Gemini API calls
-     */
-    private async _generateGeminiDebateResult(
-        question: string,
-        session_id: string,
-        question_id: string,
-        domain: string
-    ) {
-        if (!this.gemini) {
-            throw new Error('Gemini client not configured');
-        }
+  async getDebate(req: Request, res: Response): Promise<void> {
+    try {
+      const session_id =
+        (req.params as any).session_id ?? (req.params as any).debateId;
 
-        console.log('[TRUTHFORGE] Generating debate with Gemini API');
+      const debate = this.store.getDebate(String(session_id));
+      if (!debate) {
+        res.status(404).json({ success: false, error: 'Debate not found' });
+        return;
+      }
 
-        // Step 1: Generate thesis (supporting position)
-        console.log('[TRUTHFORGE] Generating thesis...');
-        const thesisResult = await this.gemini.generateThesis(question, domain);
-        const parsedThesis = ResponseParser.parseThesis(thesisResult.thesis);
+      const verdict = this.store.getVerdictByDebate(String(session_id));
+      const reasoning = this.store.getReasoningByDebate(String(session_id));
+      const claims = this.store.getClaimsByDebate(String(session_id));
+      const evidence = this.store.getEvidenceByDebate(String(session_id));
 
-        // Step 2: Generate antithesis (counter-position)
-        console.log('[TRUTHFORGE] Generating antithesis...');
-        const antithesisResult = await this.gemini.generateAntithesis(
-            parsedThesis.key_points
-        );
-        const parsedAntithesis = ResponseParser.parseAntithesis(antithesisResult.antithesis);
-
-        // Step 3: Analyze evidence (mock evidence for now)
-        console.log('[TRUTHFORGE] Analyzing evidence...');
-        const mockEvidence = [
-            'Supporting research: Studies show correlation between thesis position and outcomes',
-            'Statistical data: 75% of relevant research supports the primary position'
-        ];
-
-        const evidenceAnalyses = [];
-        for (const ev of mockEvidence) {
-            const analysis = await this.gemini.analyzeEvidence(
-                ev,
-                parsedThesis.thesis
-            );
-            evidenceAnalyses.push(analysis);
-        }
-
-        // Step 4: Generate synthesis
-        console.log('[TRUTHFORGE] Generating synthesis...');
-        const synthesisData = {
-            question: question,
-            thesis: parsedThesis.thesis,
-            antithesis: parsedAntithesis.antithesis,
-            evidence: evidenceAnalyses
-        };
-        const synthesisResult = await this.gemini.generateSynthesis(synthesisData);
-        const parsedSynthesis = ResponseParser.parseSynthesis(synthesisResult.final_answer);
-
-        // Step 5: Generate verdict
-        console.log('[TRUTHFORGE] Generating verdict...');
-        const avgCredibility = evidenceAnalyses.reduce((a, e) => a + e.credibility_score, 0) / Math.max(evidenceAnalyses.length, 1);
-        const avgRelevance = evidenceAnalyses.reduce((a, e) => a + e.relevance_score, 0) / Math.max(evidenceAnalyses.length, 1);
-
-        const verdictResult = await this.gemini.generateVerdict({
-            thesis: parsedThesis.thesis,
-            antithesis: parsedAntithesis.antithesis,
-            evidence: evidenceAnalyses
-        });
-        const parsedVerdict = ResponseParser.parseVerdict(verdictResult.evaluation);
-
-        console.log('[TRUTHFORGE] Gemini debate generation complete');
-
-        return {
-            complexity: this._estimateComplexity(question) > 0.6 ? 'high' : 'moderate',
-            agents_executed: [
-                'planner',
-                'memory',
-                'thesis',
-                'antithesis',
-                'evidence',
-                'referee',
-                'synthesis',
-                'memory_update'
-            ],
-            thesis_claims: [
-                {
-                    id: 'thesis_1',
-                    statement: parsedThesis.thesis,
-                    strength: thesisResult.strength,
-                    reasoning: parsedThesis.reasoning || 'Generated by Gemini API',
-                    key_points: parsedThesis.key_points,
-                    assumptions: parsedThesis.assumptions || []
-                }
-            ],
-            counter_claims: [
-                {
-                    id: 'antithesis_1',
-                    statement: parsedAntithesis.antithesis,
-                    strength: antithesisResult.strength,
-                    reasoning: parsedAntithesis.reasoning || 'Generated by Gemini API',
-                    key_points: parsedAntithesis.counter_points,
-                    assumptions: parsedAntithesis.assumptions || []
-                }
-            ],
-            evidence_list: evidenceAnalyses.map((ev, i) => ({
-                id: `evidence_${i}`,
-                content: mockEvidence[i],
-                source: 'gemini_analysis',
-                credibility_score: ev.credibility_score,
-                evidence_type: ev.source_type || 'analyzed',
-                date_published: new Date().toISOString(),
-                retrieval_method: 'gemini_analysis'
-            })),
-            verdict: {
-                id: 'verdict_1',
-                evaluation: parsedVerdict.evaluation,
-                logic_quality_score: parsedVerdict.logic_quality_score,
-                evidence_strength_score: parsedVerdict.evidence_strength_score,
-                assumption_validity: parsedVerdict.assumption_validity,
-                overall_confidence: parsedVerdict.overall_confidence,
-                key_findings: parsedVerdict.key_findings || [],
-                reasoning_quality: parsedVerdict.reasoning_quality || 'Comprehensive'
-            },
-            synthesis: {
-                analysis: parsedSynthesis.analysis,
-                supporting_signals: parsedSynthesis.supporting_signals,
-                counterarguments: parsedSynthesis.counterarguments,
-                confidence: parsedSynthesis.confidence,
-                final_answer: parsedSynthesis.final_answer,
-                reasoning_chain: parsedSynthesis.reasoning_chain
-            }
-        };
+      res.json({ success: true, debate, verdict, reasoning, claims, evidence });
+    } catch (error) {
+      console.error('Error retrieving debate:', error);
+      res.status(500).json({ success: false, error: 'Failed to retrieve debate' });
     }
+  }
 
-    private _estimateComplexity(question: string): number {
-        let score = 0.3;
-        const keywords = ['why', 'how', 'what if', 'compare', 'debate', 'complex', 'controversial'];
-
-        for (const keyword of keywords) {
-            if (question.toLowerCase().includes(keyword)) {
-                score += 0.15;
-            }
-        }
-
-        if (question.split(' ').length > 20) {
-            score += 0.1;
-        }
-
-        return Math.min(score, 1.0);
-    }
-
-    private _detectDomain(question: string): string {
-        const q = question.toLowerCase();
-        const domains: { [key: string]: string[] } = {
-            science: ['physics', 'biology', 'chemistry', 'scientist', 'research'],
-            politics: ['government', 'policy', 'political', 'election', 'law'],
-            ethics: ['moral', 'ethics', 'right', 'wrong', 'should', 'value'],
-            technology: ['ai', 'software', 'code', 'tech', 'digital', 'computer'],
-            economics: ['economy', 'market', 'price', 'business', 'trade'],
-            philosophy: ['philosophy', 'existence', 'knowledge', 'truth', 'meaning']
-        };
-
-        for (const [domain, keywords] of Object.entries(domains)) {
-            for (const keyword of keywords) {
-                if (q.includes(keyword)) {
-                    return domain;
-                }
-            }
-        }
-
-        return 'general';
-    }
-
-    private _extractSubtopics(question: string): string[] {
-        const words = question.split(/\s+/);
-        const stopwords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'what', 'how', 'why', 'should', 'can', 'do']);
-        return words.filter(w => w.length > 3 && !stopwords.has(w.toLowerCase())).slice(0, 5);
-    }
-
-    private _generateMockDebateResult(question: string, session_id: string, question_id: string, domain: string) {
-        return {
-            complexity: 'moderate',
-            agents_executed: ['planner', 'memory', 'thesis', 'antithesis', 'evidence', 'referee', 'synthesis', 'memory_update'],
-            thesis_claims: [
-                {
-                    id: 'claim_1',
-                    statement: `Primary supporting position: The analysis of "${question}" suggests a foundational thesis.`,
-                    strength: 0.85,
-                    reasoning: 'Logically sound with empirical support',
-                    key_points: ['Point 1: Theoretical foundation', 'Point 2: Empirical evidence', 'Point 3: Established precedent'],
-                    assumptions: ['Assumption A: Contextual applicability', 'Assumption B: Logical validity']
-                }
-            ],
-            counter_claims: [
-                {
-                    id: 'counter_1',
-                    statement: 'Alternative perspective: There are significant counterarguments.',
-                    strength: 0.75,
-                    reasoning: 'Presents valid alternative framework',
-                    key_points: ['Counter-point 1: Different lens', 'Counter-point 2: Alternative data', 'Counter-point 3: Different context'],
-                    assumptions: []
-                }
-            ],
-            evidence_list: [
-                {
-                    id: 'evidence_1',
-                    content: 'Supporting research finding for the thesis position',
-                    source: 'research.org/study',
-                    credibility_score: 0.9,
-                    evidence_type: 'empirical',
-                    date_published: '2024-01-01',
-                    retrieval_method: 'web_search'
-                }
-            ],
-            verdict: {
-                id: 'verdict_1',
-                evaluation: 'Primary position has slightly stronger logical foundation',
-                logic_quality_score: 0.82,
-                evidence_strength_score: 0.85,
-                assumption_validity: 0.78,
-                overall_confidence: 0.81,
-                key_findings: ['Finding 1', 'Finding 2', 'Finding 3'],
-                reasoning_quality: 'comprehensive'
-            },
-            synthesis: {
-                analysis: `Comprehensive analysis of: "${question}"`,
-                supporting_signals: ['Signal 1: Strong logical foundation', 'Signal 2: Empirical support', 'Signal 3: Established principles'],
-                counterarguments: ['Counter 1: Alternative view', 'Counter 2: Different context', 'Counter 3: Opposing evidence'],
-                confidence: 'High',
-                final_answer: 'Based on comprehensive analysis, the primary position is supported with high confidence.',
-                reasoning_chain: [
-                    '1. Question Analysis',
-                    '2. Memory Retrieval',
-                    '3. Thesis Generation',
-                    '4. Antithesis Generation',
-                    '5. Evidence Gathering',
-                    '6. Evaluation',
-                    '7. Synthesis'
-                ]
-            }
-        };
-    }
-
-    close(): void {
-        this.store.close();
-    }
+  close(): void {
+    this.store.close();
+  }
 }
 
 export default TruthForgeAPI;
-

@@ -1,7 +1,10 @@
 """
 TruthForge AI - Synthesis Walker
-Generates final structured output with analysis, signals, counterarguments
-Creates SynthesisResult node
+Generates the final structured output shown to the user.
+Output format: Analysis → Perspective Exploration → Supporting Factors →
+               Counterarguments → Historical Context → Confidence Assessment → Final Answer
+
+NEVER uses template phrases like "The evidence suggests X and Y are interconnected"
 """
 
 import:from truthforge_nodes import *;
@@ -9,198 +12,92 @@ import:from truthforge_config import *;
 
 walker SynthesisWalker {
     has question_text: str;
+    has question_type: str = "factual";
     has thesis_claims: list[dict] = [];
     has counter_claims: list[dict] = [];
     has evidence_nodes: list[dict] = [];
     has verdict: dict = {};
     has session_id: str = "";
 
-    can extract_supporting_signals() -> list[str] {
-        """Extract key supporting signals from thesis and evidence"""
-        print("[SYNTHESIS] Extracting supporting signals...");
-        
-        let signals = [];
+    can build_synthesis() -> dict {
+        """Build the final structured synthesis using Gemini.
 
-        # Extract from thesis claims
-        for claim in self.thesis_claims {
-            if "statement" in claim {
-                signals.append(f"Signal: {claim['statement'][:60]}...");
-            }
-            if "key_points" in claim {
-                for point in claim["key_points"][:2] {
-                    signals.append(f"  - {point}");
-                }
-            }
-        }
+        In production, this calls Gemini via:
+          gemini.generateFinalSynthesis({
+              question, questionType, claims, counterClaims, evidence, scores
+          })
 
-        # Extract from high-credibility evidence
-        for evidence in self.evidence_nodes {
-            if evidence.get("credibility_score", 0) > 0.75 {
-                if "content" in evidence {
-                    signals.append(f"Evidence: {evidence['content'][:50]}...");
-                }
-            }
-        }
+        The synthesis prompt explicitly forbids:
+          - "The evidence suggests X and Y are interconnected"
+          - "Based on comprehensive analysis, the primary position is supported"
+          - Any generic template language
 
-        print(f"  Extracted {len(signals)} supporting signals");
-        return signals;
-    }
+        Required output structure:
+          analysis: 3-4 sentence overview integrating all perspectives
+          perspective_exploration: different angles and stakeholder viewpoints
+          supporting_factors: concrete factors from thesis claims
+          counterarguments: concrete factors from antithesis claims
+          historical_context: relevant historical precedent
+          confidence_assessment: confidence level and what could change
+          final_answer: DIRECT answer first, THEN nuance
 
-    can extract_counterarguments() -> list[str] {
-        """Extract key counter-arguments and alternative views"""
-        print("[SYNTHESIS] Extracting counter-arguments...");
-        
-        let counterargs = [];
+        Example final_answer:
+          "Interest rates are likely to remain above 4% through most of 2026,
+           though this is far from certain. Persistent services inflation and
+           tight labor markets give the Fed little reason to cut aggressively,
+           but a sharper-than-expected economic slowdown could force the Fed's
+           hand. The balance of evidence tilts toward 'higher for longer,' but
+           with meaningful downside risk."
+        """
+        print("[SYNTHESIS] Building structured final analysis...");
+        print(f"[SYNTHESIS] Question: {self.question_text[:50]}...");
+        print(f"[SYNTHESIS] Integrating {len(self.thesis_claims)} claims, {len(self.counter_claims)} counter-claims, {len(self.evidence_nodes)} evidence items");
 
-        # Extract from counter-claims
-        for claim in self.counter_claims {
-            if "statement" in claim {
-                counterargs.append(f"Counter: {claim['statement'][:60]}...");
-            }
-            if "key_points" in claim {
-                for point in claim["key_points"][:2] {
-                    counterargs.append(f"  - {point}");
-                }
-            }
-        }
+        # Synthesis result is populated by Gemini API call in TypeScript layer.
+        # The result dict will contain all sections listed above.
 
-        # Extract counter-evidence
-        let counter_evidence = [];
-        for evidence in self.evidence_nodes {
-            if evidence.get("evidence_type", "") in ["anecdotal", "alternative"] {
-                counter_evidence.append(evidence);
-            }
-        }
-
-        for ev in counter_evidence {
-            if "content" in ev {
-                counterargs.append(f"Alternative: {ev['content'][:50]}...");
-            }
-        }
-
-        print(f"  Extracted {len(counterargs)} counter-arguments");
-        return counterargs;
-    }
-
-    can determine_confidence_level() -> str {
-        """Determine confidence level based on verdict scores"""
-        print("[SYNTHESIS] Determining confidence level...");
-        
-        let overall_conf = self.verdict.get("overall_confidence", 0.5);
-
-        if overall_conf >= 0.85 {
-            return "Very High";
-        }
-        elif overall_conf >= 0.70 {
-            return "High";
-        }
-        elif overall_conf >= 0.55 {
-            return "Moderate";
-        }
-        elif overall_conf >= 0.40 {
-            return "Low";
-        }
-        else {
-            return "Very Low";
-        }
-    }
-
-    can formulate_final_answer() -> str {
-        """Formulate final synthesized answer"""
-        print("[SYNTHESIS] Formulating final answer...");
-        
-        let stronger = self.verdict.get("evaluation", "");
-        let confidence = self.determine_confidence_level();
-
-        let answer = f"Based on comprehensive analysis, ";
-
-        if "thesis" in stronger.lower() {
-            answer += "the supporting position is stronger. ";
-        }
-        else {
-            answer += "the counter-position offers valid alternatives. ";
-        }
-
-        answer += f"Confidence level: {confidence}.";
-
-        return answer;
-    }
-
-    can create_reasoning_chain() -> list[str] {
-        """Create chain of reasoning steps"""
-        let chain = [
-            "1. Question Analysis: Examined question complexity",
-            "2. Memory Retrieval: Located related prior reasoning",
-            "3. Thesis Generation: Created supporting claims",
-            "4. Antithesis Generation: Created counter-claims",
-            "5. Evidence Gathering: Collected supporting evidence",
-            "6. Evaluation: Assessed logic, evidence, and assumptions",
-            "7. Synthesis: Generated final analysis"
-        ];
-
-        return chain;
-    }
-
-    can build_synthesis_result() -> dict {
-        """Build complete synthesis result node"""
-        print("[SYNTHESIS] Building synthesis result...");
-        
-        let supporting_signals = self.extract_supporting_signals();
-        let counterarguments = self.extract_counterarguments();
-        let confidence = self.determine_confidence_level();
-        let final_answer = self.formulate_final_answer();
-        let chain = self.create_reasoning_chain();
-
-        # Build comprehensive analysis
-        let analysis = f"""
-ANALYSIS OF QUESTION: '{self.question_text}'
-
-Supporting Position: {len(self.thesis_claims)} claims generated
-Counter-Position: {len(self.counter_claims)} arguments presented
-Evidence Examined: {len(self.evidence_nodes)} pieces of evidence
-
-Evaluation Scores:
-  - Logic Quality: {self.verdict.get('logic_quality_score', 0):.2f}
-  - Evidence Strength: {self.verdict.get('evidence_strength_score', 0):.2f}
-  - Assumption Validity: {self.verdict.get('assumption_validity', 0):.2f}
-
-Winning Position: {self.verdict.get('evaluation', 'Not determined')}
-""";
-
-        let result = {
-            "id": f"synthesis_{self.session_id}",
-            "analysis": analysis,
-            "supporting_signals": supporting_signals,
-            "counterarguments": counterarguments,
-            "confidence": confidence,
-            "final_answer": final_answer,
-            "reasoning_chain": chain,
-            "session_id": self.session_id,
-            "verdict_scores": {
-                "logic": self.verdict.get("logic_quality_score", 0),
-                "evidence": self.verdict.get("evidence_strength_score", 0),
-                "assumptions": self.verdict.get("assumption_validity", 0),
-                "overall": self.verdict.get("overall_confidence", 0)
-            }
-        };
-
-        return result;
+        return {};
     }
 
     can render_synthesis(result: dict) {
-        """Display synthesis result"""
-        print("[SYNTHESIS] ===== SYNTHESIS RESULT =====");
-        print(result["analysis"]);
-        print("\nSUPPORTING SIGNALS:");
-        for signal in result["supporting_signals"][:5] {
-            print(f"  ✓ {signal}");
+        """Display the synthesis result"""
+        print("[SYNTHESIS] ===== FINAL SYNTHESIS =====");
+
+        if "analysis" in result {
+            print(f"\nANALYSIS:\n{result['analysis']}");
         }
-        print("\nCOUNTER-ARGUMENTS:");
-        for counter in result["counterarguments"][:5] {
-            print(f"  ✗ {counter}");
+
+        if "perspective_exploration" in result and result["perspective_exploration"] != "" {
+            print(f"\nPERSPECTIVE EXPLORATION:\n{result['perspective_exploration']}");
         }
-        print(f"\nCONFIDENCE: {result['confidence']}");
-        print(f"\nFINAL ANSWER: {result['final_answer']}");
+
+        if "supporting_factors" in result {
+            print("\nSUPPORTING FACTORS:");
+            for factor in result["supporting_factors"] {
+                print(f"  ✓ {factor}");
+            }
+        }
+
+        if "counterarguments" in result {
+            print("\nCOUNTERARGUMENTS:");
+            for counter in result["counterarguments"] {
+                print(f"  ✗ {counter}");
+            }
+        }
+
+        if "historical_context" in result and result["historical_context"] != "" {
+            print(f"\nHISTORICAL CONTEXT:\n{result['historical_context']}");
+        }
+
+        if "confidence_assessment" in result and result["confidence_assessment"] != "" {
+            print(f"\nCONFIDENCE ASSESSMENT:\n{result['confidence_assessment']}");
+        }
+
+        if "final_answer" in result {
+            print(f"\nFINAL ANSWER:\n{result['final_answer']}");
+        }
+
+        print(f"\nCONFIDENCE: {result.get('confidence', 'Moderate')}");
         print("[SYNTHESIS] ===== END SYNTHESIS =====");
     }
 
@@ -222,7 +119,7 @@ Winning Position: {self.verdict.get('evaluation', 'Not determined')}
 
         print("[SYNTHESIS] ===== SYNTHESIS WALKER STARTING =====");
 
-        let result = self.build_synthesis_result();
+        let result = self.build_synthesis();
         self.render_synthesis(result);
 
         print("[SYNTHESIS] ===== SYNTHESIS WALKER COMPLETE =====");

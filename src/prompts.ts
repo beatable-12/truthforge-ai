@@ -1,196 +1,367 @@
 /**
- * TruthForge AI - Prompt Templates
- * Carefully crafted prompts for Gemini API calls
- * All prompts are designed to elicit structured JSON responses
+ * TruthForge AI - Agent Prompts
+ * Each prompt is designed for a specific agent walker.
+ * All prompts explicitly forbid placeholder/template language.
  */
 
-export const THESIS_PROMPT = (question: string, topic: string): string => `You are an expert debater and analyst tasked with generating the strongest supporting position for a complex question.
+// ─── Planner ────────────────────────────────────────────────────────────────
 
-Question: ${question}
-Topic Domain: ${topic}
+export const PLANNER_CLASSIFY_PROMPT = (question: string): string => `You are the Planner agent of a multi-agent reasoning system called TruthForge.
 
-Generate a comprehensive and compelling thesis that STRONGLY SUPPORTS the position implied by this question. Your response MUST be valid JSON with exactly this structure:
+Your job is to classify this question and decide which downstream agents should be activated.
+
+Question: "${question}"
+
+Classify the question into EXACTLY ONE of these types:
+- factual: The question asks for verifiable facts or data
+- prediction: The question asks about future outcomes or forecasts
+- controversial: The question involves contested viewpoints or ethical debates
+- strategic: The question asks for strategic analysis, trade-offs, or decision-making
+- philosophical: The question involves abstract, existential, or conceptual reasoning
+
+Also identify the domain (economics, technology, politics, science, philosophy, ethics, health, general).
+
+Respond with ONLY valid JSON:
 {
-  "thesis": "A clear, concise statement of your supporting position (2-3 sentences)",
-  "key_points": [
-    "First supporting argument with specific details",
-    "Second supporting argument with specific details", 
-    "Third supporting argument with specific details",
-    "Fourth supporting argument with specific details",
-    "Fifth supporting argument with specific details"
-  ],
-  "reasoning": "Detailed logical reasoning explaining why this position is sound (3-5 sentences)",
-  "strength": 0.85,
-  "assumptions": ["Assumption 1", "Assumption 2", "Assumption 3"]
+  "question_type": "prediction",
+  "domain": "economics",
+  "complexity": 0.75,
+  "reasoning": "Brief 1-sentence explanation of why you chose this classification",
+  "agents_to_activate": ["memory", "thesis", "antithesis", "evidence", "referee", "synthesis", "memory_update"]
 }
 
-Requirements:
-- The thesis must be logically sound and well-reasoned
-- Key points must be specific, detailed, and compelling
-- Provide 0-1 strength score for this position
-- Include any underlying assumptions
-- Format MUST be valid JSON`;
+Rules:
+- For simple factual questions, you may skip "evidence" and "memory" agents
+- For complex/controversial/prediction questions, activate ALL agents
+- complexity is a 0-1 float based on how many dimensions the question involves`;
 
-export const ANTITHESIS_PROMPT = (claims: string[]): string => {
-  const claimsText = claims.map((c, i) => `${i + 1}. ${c}`).join('\n');
+// ─── Thesis ─────────────────────────────────────────────────────────────────
 
-  return `You are an expert debater tasked with generating strong counter-arguments to a set of claims.
+export const THESIS_CLAIMS_PROMPT = (
+  question: string,
+  questionType: string,
+  domain: string,
+  memoryContext: string
+): string => `You are the Thesis agent of TruthForge. Your job is to generate 2-4 CONCRETE supporting claims for the question below.
 
-Original Claims:
-${claimsText}
+Question: "${question}"
+Question Type: ${questionType}
+Domain: ${domain}
+${memoryContext ? `Prior Memory Context:\n${memoryContext}\n` : ''}
+Generate 2-4 specific, substantive claims that SUPPORT an affirmative or positive answer to this question.
 
-Generate compelling counter-arguments that present the strongest possible OPPOSING position. Your response MUST be valid JSON with exactly this structure:
+CRITICAL RULES:
+- Each claim MUST be specific to this exact question. Reference real concepts, entities, mechanisms, or data relevant to the topic.
+- DO NOT write generic text like "Logical foundation of the argument" or "Empirical support for the thesis"
+- DO NOT write meta-commentary about what a claim would say. Write the actual claim.
+- Each claim should be a standalone assertion that a knowledgeable person might make in a debate.
+
+Example for "Will interest rates stay above 4% in 2026?":
+GOOD claims:
+- "Persistent inflation in services and housing keeps the Fed's preferred PCE measure above their 2% target, reducing justification for rate cuts"
+- "Labor markets remain historically tight with unemployment below 4%, giving central banks little pressure to ease monetary policy"
+- "Federal deficit spending continues to expand, increasing treasury supply and putting upward pressure on long-term yields"
+
+BAD claims (DO NOT generate these):
+- "Point 1: Logical foundation of the argument"
+- "The evidence suggests rates and above are interconnected"
+- "Primary supporting position for the question"
+
+Respond with ONLY valid JSON:
 {
-  "antithesis": "A clear, concise statement of your counter-position (2-3 sentences)",
-  "counter_points": [
-    "First counter-argument addressing the claims",
-    "Second counter-argument with alternative perspective",
-    "Third counter-argument highlighting limitations",
-    "Fourth counter-argument presenting contrary evidence",
-    "Fifth counter-argument exploring implications"
-  ],
-  "reasoning": "Detailed logical reasoning for this opposing position (3-5 sentences)",
-  "strength": 0.80,
-  "assumptions": ["Assumption 1", "Assumption 2"]
-}
+  "claims": [
+    {
+      "statement": "Your specific claim here",
+      "reasoning": "1-2 sentence explanation of the logic behind this claim",
+      "strength": 0.85
+    }
+  ]
+}`;
 
-Requirements:
-- Counter-arguments must directly address the original claims
-- Each point should be specific and logically valid
-- Provide 0-1 strength score for this opposing position
-- Include alternative frameworks or perspectives
-- Format MUST be valid JSON`;
+// ─── Antithesis ─────────────────────────────────────────────────────────────
+
+export const ANTITHESIS_ATTACK_PROMPT = (
+  question: string,
+  thesisClaims: Array<{ statement: string; reasoning: string }>
+): string => {
+  const claimsBlock = thesisClaims
+    .map((c, i) => `Claim ${i + 1}: "${c.statement}"\n  Reasoning: ${c.reasoning}`)
+    .join('\n\n');
+
+  return `You are the Antithesis agent of TruthForge. Your job is to ATTACK each thesis claim individually with a specific counter-argument.
+
+Question: "${question}"
+
+Thesis claims to attack:
+${claimsBlock}
+
+For EACH claim above, generate a specific counter-argument that directly challenges it.
+
+CRITICAL RULES:
+- Each counter-argument must target the specific claim, not be a generic rebuttal
+- Reference real-world mechanisms, historical precedent, or logical flaws
+- DO NOT write generic text like "Alternative perspective" or "Different context"
+- DO NOT write "Counter-argument: The opposite could also be true"
+
+Example:
+If the thesis claim is "Persistent inflation keeps rates elevated":
+GOOD counter: "Deflationary pressure from AI-driven productivity gains and weakening commodity prices could rapidly bring inflation below target, forcing central banks to cut rates sooner than markets expect"
+BAD counter: "Counter-point 1: Different lens on the issue"
+
+Respond with ONLY valid JSON:
+{
+  "counter_claims": [
+    {
+      "targets_claim_index": 0,
+      "statement": "Your specific counter-argument here",
+      "attack_type": "empirical|logical|historical|contextual",
+      "reasoning": "1-2 sentence explanation",
+      "strength": 0.80
+    }
+  ]
+}`;
 };
 
-export const EVIDENCE_ANALYSIS_PROMPT = (evidence: string, claim: string): string => `You are an expert evidence analyst tasked with evaluating the quality, credibility, and relevance of evidence supporting or refuting a claim.
+// ─── Evidence ───────────────────────────────────────────────────────────────
 
-Claim: ${claim}
+export const EVIDENCE_GATHER_PROMPT = (
+  question: string,
+  claims: string[],
+  counterClaims: string[]
+): string => {
+  const claimsBlock = claims.map((c, i) => `  ${i + 1}. ${c}`).join('\n');
+  const counterBlock = counterClaims.map((c, i) => `  ${i + 1}. ${c}`).join('\n');
 
-Evidence to Analyze:
-${evidence}
+  return `You are the Evidence agent of TruthForge. Your job is to gather and analyze evidence relevant to the claims and counter-claims below.
 
-Evaluate this evidence comprehensively. Your response MUST be valid JSON with exactly this structure:
+Question: "${question}"
+
+Supporting Claims:
+${claimsBlock}
+
+Counter-Claims:
+${counterBlock}
+
+Analyze what evidence exists (from your knowledge) that supports or undermines these positions.
+
+CRITICAL RULES:
+- Cite specific data points, studies, historical events, or expert consensus where possible
+- Each evidence item must have a clear source type (academic, government data, news, expert opinion, historical record)
+- DO NOT invent fake URLs or DOIs. Use descriptive source titles instead.
+- If you don't have specific data, say "Based on general economic consensus" rather than making up a source
+
+Respond with ONLY valid JSON:
 {
-  "credibility_score": 0.85,
-  "relevance_score": 0.90,
-  "key_findings": [
-    "Key finding 1 from this evidence",
-    "Key finding 2 from this evidence",
-    "Key finding 3 from this evidence"
+  "source_count": 4,
+  "source_titles": [
+    "Federal Reserve Economic Data (FRED)",
+    "Bureau of Labor Statistics Employment Report",
+    "IMF World Economic Outlook 2025",
+    "Historical Fed Funds Rate Analysis"
   ],
-  "quality_assessment": "Detailed assessment of evidence quality, methodology, and reliability",
-  "limitations": "Specific limitations, biases, or caveats to consider",
-  "source_type": "Type of source (e.g., peer-reviewed study, journalistic report, expert opinion)",
-  "recency": "Assessment of whether this evidence is current and relevant"
+  "evidence": [
+    {
+      "content": "Specific finding or data point",
+      "source_title": "Source name",
+      "source_type": "government_data|academic|news|expert_opinion|historical",
+      "supports": "thesis|antithesis|both|neither",
+      "credibility": 0.90,
+      "relevance": 0.85
+    }
+  ]
+}`;
+};
+
+// ─── Referee ────────────────────────────────────────────────────────────────
+
+export const REFEREE_EVALUATE_PROMPT = (
+  question: string,
+  claims: Array<{ statement: string; strength: number }>,
+  counterClaims: Array<{ statement: string; strength: number }>,
+  evidence: Array<{ content: string; supports: string; credibility: number }>
+): string => {
+  const claimsBlock = claims
+    .map((c, i) => `  ${i + 1}. [strength: ${c.strength}] ${c.statement}`)
+    .join('\n');
+  const counterBlock = counterClaims
+    .map((c, i) => `  ${i + 1}. [strength: ${c.strength}] ${c.statement}`)
+    .join('\n');
+  const evidenceBlock = evidence
+    .map(
+      (e, i) =>
+        `  ${i + 1}. [credibility: ${e.credibility}, supports: ${e.supports}] ${e.content}`
+    )
+    .join('\n');
+
+  return `You are the Referee agent of TruthForge. You evaluate the quality of reasoning in the debate below.
+
+Question: "${question}"
+
+THESIS CLAIMS:
+${claimsBlock}
+
+COUNTER-CLAIMS:
+${counterBlock}
+
+EVIDENCE:
+${evidenceBlock}
+
+Evaluate the debate and score each dimension. Your scores must be DERIVED from the actual content above — do not assign default scores.
+
+Respond with ONLY valid JSON:
+{
+  "logic_strength": 0.82,
+  "evidence_strength": 0.75,
+  "assumption_risk": 0.40,
+  "agreement_level": 0.55,
+  "stronger_position": "thesis|antithesis|balanced",
+  "key_findings": [
+    "Specific finding about the debate quality",
+    "Another specific observation"
+  ],
+  "reasoning": "2-3 sentence summary of your evaluation"
 }
 
-Scoring Guidelines:
-- Credibility (0-1): Assess the trustworthiness of the source and methodology
-- Relevance (0-1): Assess how directly this evidence addresses the claim
+Scoring guide:
+- logic_strength (0-1): How logically coherent are the arguments on both sides?
+- evidence_strength (0-1): How well-supported are the positions by evidence?
+- assumption_risk (0-1): How many risky or unverified assumptions are being made? (higher = more risk)
+- agreement_level (0-1): How much do thesis and antithesis agree? (0 = total disagreement, 1 = consensus)`;
+};
 
-Requirements:
-- Provide detailed analysis, not just scores
-- Identify specific strengths and weaknesses
-- Consider source bias and potential limitations
-- Assess methodological rigor if applicable
-- Format MUST be valid JSON`;
+// ─── Synthesis ──────────────────────────────────────────────────────────────
+
+export const SYNTHESIS_FINAL_PROMPT = (data: {
+  question: string;
+  questionType: string;
+  claims: Array<{ statement: string }>;
+  counterClaims: Array<{ statement: string }>;
+  evidence: Array<{ content: string; source_title: string; supports: string }>;
+  scores: {
+    logic_strength: number;
+    evidence_strength: number;
+    assumption_risk: number;
+    agreement_level: number;
+    stronger_position: string;
+  };
+}): string => {
+  const claimsList = data.claims.map((c) => `  - ${c.statement}`).join('\n');
+  const counterList = data.counterClaims.map((c) => `  - ${c.statement}`).join('\n');
+  const evidenceList = data.evidence
+    .map((e) => `  - [${e.supports}] ${e.content} (${e.source_title})`)
+    .join('\n');
+
+  return `You are the Synthesis agent of TruthForge. You produce the FINAL analysis that the user sees.
+
+Question: "${data.question}"
+Question Type: ${data.questionType}
+
+SUPPORTING CLAIMS:
+${claimsList}
+
+COUNTER-ARGUMENTS:
+${counterList}
+
+EVIDENCE:
+${evidenceList}
+
+REFEREE SCORES:
+- Logic Strength: ${data.scores.logic_strength}
+- Evidence Strength: ${data.scores.evidence_strength}
+- Assumption Risk: ${data.scores.assumption_risk}
+- Agreement Level: ${data.scores.agreement_level}
+- Stronger Position: ${data.scores.stronger_position}
+
+Write a comprehensive, nuanced final analysis. Your output will be displayed directly to the user.
+
+CRITICAL RULES:
+- Start the final_answer with a DIRECT answer to the question. Then add nuance.
+- NEVER use template phrases like "The evidence suggests X and Y are interconnected"
+- NEVER write "Based on comprehensive analysis, the primary position is supported"
+- Be specific. Reference the actual claims, counter-claims, and evidence from above.
+- Write like an expert analyst, not a template engine.
+
+Example of a GOOD final_answer:
+"Interest rates are likely to remain above 4% through most of 2026, though this is far from certain. Persistent services inflation and tight labor markets give the Fed little reason to cut aggressively, but a sharper-than-expected economic slowdown — triggered by weakening consumer spending or a credit event — could force the Fed's hand. Historical precedent from the 1990s suggests the Fed tends to hold longer than markets expect, but eventually cuts once unemployment starts rising. The balance of evidence tilts toward 'higher for longer,' but with meaningful downside risk."
+
+Example of a BAD final_answer (DO NOT write this):
+"Based on comprehensive analysis, the supporting position is stronger. The evidence suggests rates and above are interconnected. Confidence level: High."
+
+Respond with ONLY valid JSON:
+{
+  "analysis": "3-4 sentence overview integrating all perspectives",
+  "perspective_exploration": "2-3 sentences exploring different angles and stakeholder viewpoints",
+  "supporting_factors": ["Factor 1 from thesis", "Factor 2 from thesis"],
+  "counterarguments": ["Counter 1 from antithesis", "Counter 2 from antithesis"],
+  "historical_context": "1-2 sentences of relevant historical precedent or analogies",
+  "confidence_assessment": "1-2 sentences on confidence level and what could change the conclusion",
+  "final_answer": "Direct answer first. Then nuanced explanation. 3-5 sentences total.",
+  "confidence": "High|Moderate|Low",
+  "reasoning_chain": [
+    "Step 1: What the planner identified",
+    "Step 2: Key thesis claims",
+    "Step 3: How counter-arguments challenged them",
+    "Step 4: What evidence revealed",
+    "Step 5: Final judgment"
+  ]
+}`;
+};
+
+// ─── Legacy compatibility (kept for any imports that reference these) ────────
+
+export const THESIS_PROMPT = THESIS_CLAIMS_PROMPT;
+export const ANTITHESIS_PROMPT = ANTITHESIS_ATTACK_PROMPT;
+
+export const EVIDENCE_ANALYSIS_PROMPT = (evidence: string, claim: string): string =>
+  EVIDENCE_GATHER_PROMPT(claim, [evidence], []);
 
 export const SYNTHESIS_PROMPT = (data: {
   question: string;
   thesis: string;
   antithesis: string;
   evidence_summary: string;
-}): string => `You are an expert synthesizer tasked with integrating multiple perspectives and evidence into a comprehensive analysis.
-
-Original Question: ${data.question}
-
-Supporting Position: ${data.thesis}
-
-Opposing Position: ${data.antithesis}
-
-Evidence Summary:
-${data.evidence_summary}
-
-Create a comprehensive synthesis integrating all perspectives. Your response MUST be valid JSON with exactly this structure:
-{
-  "analysis": "Comprehensive narrative analysis integrating thesis, antithesis, and evidence (4-6 sentences)",
-  "supporting_signals": [
-    "Strong signal supporting the primary position",
-    "Another supporting signal with evidence",
-    "Third supporting evidence or logic"
-  ],
-  "counterarguments": [
-    "Significant counter-argument to address",
-    "Alternative perspective that deserves consideration",
-    "Potential weakness in the primary position"
-  ],
-  "confidence": "High|Medium|Low",
-  "final_answer": "Your well-reasoned final assessment addressing the original question (3-4 sentences)",
-  "reasoning_chain": [
-    "Step 1 in logical reasoning",
-    "Step 2 in logical reasoning",
-    "Step 3 in logical reasoning",
-    "Step 4 in logical reasoning",
-    "Step 5 concluding reasoning"
-  ]
-}
-
-Requirements:
-- Provide balanced analysis considering all perspectives
-- Be explicit about confidence level
-- Support final answer with logical chain of reasoning
-- Acknowledge limitations and alternative views
-- Format MUST be valid JSON`;
+}): string =>
+  SYNTHESIS_FINAL_PROMPT({
+    question: data.question,
+    questionType: 'general',
+    claims: [{ statement: data.thesis }],
+    counterClaims: [{ statement: data.antithesis }],
+    evidence: [{ content: data.evidence_summary, source_title: 'Analysis', supports: 'both' }],
+    scores: {
+      logic_strength: 0.75,
+      evidence_strength: 0.75,
+      assumption_risk: 0.5,
+      agreement_level: 0.5,
+      stronger_position: 'balanced',
+    },
+  });
 
 export const VERDICT_PROMPT = (data: {
   thesis: string;
   antithesis: string;
   average_credibility: number;
   average_relevance: number;
-}): string => `You are an expert judge tasked with evaluating the overall quality of reasoning and evidence in a debate.
-
-Thesis (Supporting Position): ${data.thesis}
-
-Antithesis (Counter-Position): ${data.antithesis}
-
-Evidence Quality Summary:
-- Average Credibility Score: ${data.average_credibility.toFixed(2)}/1.0
-- Average Relevance Score: ${data.average_relevance.toFixed(2)}/1.0
-
-Provide your comprehensive verdict. Your response MUST be valid JSON with exactly this structure:
-{
-  "evaluation": "Which position has stronger foundation and why (2-3 sentences)",
-  "logic_quality_score": 0.82,
-  "evidence_strength_score": 0.80,
-  "assumption_validity": 0.78,
-  "overall_confidence": 0.80,
-  "key_findings": [
-    "Key finding about thesis strength",
-    "Key finding about evidence quality",
-    "Key finding about logical coherence"
-  ],
-  "reasoning_quality": "Assessment of overall reasoning quality and rigor"
-}
-
-Scoring Guidelines (all 0-1):
-- Logic Quality: Assess logical validity, coherence, and soundness
-- Evidence Strength: Assess quality and relevance of supporting evidence
-- Assumption Validity: Assess whether underlying assumptions are reasonable
-- Overall Confidence: Provide your overall confidence in the analysis
-
-Requirements:
-- Be objective and fair to both positions
-- Provide detailed scoring rationale
-- Identify logical fallacies or weak assumptions
-- Consider evidence quality in your scoring
-- Format MUST be valid JSON`;
+}): string =>
+  REFEREE_EVALUATE_PROMPT(
+    '',
+    [{ statement: data.thesis, strength: 0.8 }],
+    [{ statement: data.antithesis, strength: 0.75 }],
+    [{ content: `Avg credibility: ${data.average_credibility}, Avg relevance: ${data.average_relevance}`, supports: 'both', credibility: data.average_credibility }]
+  );
 
 export const prompts = {
+  PLANNER_CLASSIFY_PROMPT,
+  THESIS_CLAIMS_PROMPT,
+  ANTITHESIS_ATTACK_PROMPT,
+  EVIDENCE_GATHER_PROMPT,
+  REFEREE_EVALUATE_PROMPT,
+  SYNTHESIS_FINAL_PROMPT,
+  // Legacy
   THESIS_PROMPT,
   ANTITHESIS_PROMPT,
   EVIDENCE_ANALYSIS_PROMPT,
   SYNTHESIS_PROMPT,
-  VERDICT_PROMPT
+  VERDICT_PROMPT,
 };
 
 export default prompts;
